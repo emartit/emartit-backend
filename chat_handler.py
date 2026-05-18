@@ -1,6 +1,6 @@
-import anthropic
 import os
 from typing import List
+import anthropic
 
 DEFAULT_SYSTEM_PROMPT = """You are a helpful, friendly AI assistant for a business website.
 You answer customer questions clearly and professionally.
@@ -31,12 +31,11 @@ async def handle_chat(client_id: str, message: str, history: list) -> str:
     })
     
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=500,
         system=DEFAULT_SYSTEM_PROMPT,
         messages=messages
     )
     
     reply = response.content[0].text
-    
     return reply
