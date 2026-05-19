@@ -34,52 +34,48 @@ def build_system_prompt(settings: dict) -> str:
 
 async def handle_chat(client_id: str, message: str, history: list) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
-    
     if not api_key:
         raise Exception("ANTHROPIC_API_KEY is not set")
-    
-    # Try to get client settings from database
+
     system_prompt = DEFAULT_SYSTEM_PROMPT
+    session_id = None
+
     try:
         from database import get_client_settings, log_conversation, increment_usage
         import uuid
+        session_id = str(uuid.uuid4())
         settings = get_client_settings(client_id)
         if settings:
             system_prompt = build_system_prompt(settings)
-        
-        # Log the user message
-        session_id = str(uuid.uuid4())
         log_conversation(client_id, session_id, message, "user")
     except Exception as e:
         print(f"Database error (non-fatal): {e}")
-    
+
     client = anthropic.Anthropic(api_key=api_key)
-    
+
     messages = []
     for msg in history:
-        messages.append({
-            "role": msg.role,
-            "content": msg.content
-        })
-    messages.append({
-        "role": "user",
-        "content": message
-    })
-    
+        messages.append({"role": msg.role, "content": msg.content})
+    messages.append({"role": "user", "content": message})
+
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=500,
         system=system_prompt,
         messages=messages
     )
-    
+
     reply = response.content[0].text
-    
-    # Log the assistant reply and increment usage
+
+    # Get token usage from response
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+
     try:
-        log_conversation(client_id, session_id, reply, "assistant")
-        increment_usage(client_id)
+        if session_id:
+            log_conversation(client_id, session_id, reply, "assistant")
+        increment_usage(client_id, input_tokens, output_tokens)
     except Exception as e:
         print(f"Database logging error (non-fatal): {e}")
-    
+
     return reply
