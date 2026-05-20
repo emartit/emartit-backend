@@ -5,7 +5,7 @@ from typing import List, Optional
 import os
 import hashlib
 
-app = FastAPI(title="eMart IT Chatbot API", version="1.0.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
