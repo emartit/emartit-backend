@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
+import hashlib
 
 app = FastAPI(title="eMart IT Chatbot API", version="1.0.0")
 
@@ -44,6 +45,15 @@ class ClientSettings(BaseModel):
     bot_name: Optional[str] = "Assistant"
     bot_color: Optional[str] = "#1a569a"
     custom_prompt: Optional[str] = ""
+
+class ClientLogin(BaseModel):
+    email: str
+    password: str
+
+class ClientRegister(BaseModel):
+    client_id: str
+    email: str
+    password: str
 
 @app.get("/")
 def root():
@@ -128,6 +138,20 @@ def get_usage(client_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/clients/{client_id}/settings")
+def get_client_settings(client_id: str):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table("client_settings").select("*").eq("client_id", client_id).execute()
+        client = supabase.table("clients").select("*").eq("id", client_id).execute()
+        return {
+            "settings": result.data[0] if result.data else {},
+            "client": client.data[0] if client.data else {}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/report")
 def get_monthly_report():
     try:
@@ -155,5 +179,43 @@ def toggle_client_status(client_id: str, is_active: bool):
         supabase = get_supabase_client()
         result = supabase.table("clients").update({"is_active": is_active}).eq("id", client_id).execute()
         return {"success": True, "client": result.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/auth/register")
+def register_client(data: ClientRegister):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        password_hash = hashlib.sha256(data.password.encode()).hexdigest()
+        result = supabase.table("client_auth").insert({
+            "client_id": data.client_id,
+            "email": data.email,
+            "password_hash": password_hash
+        }).execute()
+        return {"success": True, "message": "Account created successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/auth/login")
+def login_client(data: ClientLogin):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        password_hash = hashlib.sha256(data.password.encode()).hexdigest()
+        result = supabase.table("client_auth").select("*").eq("email", data.email).eq("password_hash", password_hash).execute()
+        if not result.data:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        auth = result.data[0]
+        client = supabase.table("clients").select("*").eq("id", auth["client_id"]).execute()
+        if not client.data or not client.data[0]["is_active"]:
+            raise HTTPException(status_code=403, detail="Account is inactive")
+        return {
+            "success": True,
+            "client_id": auth["client_id"],
+            "client": client.data[0]
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
