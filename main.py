@@ -375,10 +375,25 @@ def admin_export_csv(x_admin_token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class GHLPayload(BaseModel):
+    contact_name: Optional[str] = ""
+    business_name: Optional[str] = ""
+    business_type: Optional[str] = ""
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    location: Optional[str] = ""
+    working_hours: Optional[str] = ""
+    services: Optional[str] = ""
+    client_id: Optional[str] = ""
+    dashboard_url: Optional[str] = ""
+    login_email: Optional[str] = ""
+    login_password: Optional[str] = ""
+    created_at: Optional[str] = ""
+
 @app.post("/admin/notify-ghl")
-async def notify_ghl(request: Request):
+async def notify_ghl(payload: GHLPayload):
     import httpx
-    data = await request.json()
+    data = payload.dict()
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
