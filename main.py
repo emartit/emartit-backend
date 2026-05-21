@@ -238,10 +238,9 @@ async def admin_login(request: Request):
 
 @app.get("/admin/clients")
 def admin_get_all_clients(x_admin_token: str = None):
-    from fastapi import Header
     from database import get_supabase_client
     expected = "admin_" + ADMIN_PASSWORD
-    if x_admin_token != expected:
+    if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         supabase = get_supabase_client()
