@@ -57,7 +57,7 @@ class ClientRegister(BaseModel):
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "1.0.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.0.0"}
 
 @app.get("/health")
 def health_check():
@@ -229,7 +229,6 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
 
 @app.post("/admin/login")
 async def admin_login(request: Request):
-    from fastapi import Request
     data = await request.json()
     password = data.get("password", "")
     if password != ADMIN_PASSWORD:
@@ -244,14 +243,12 @@ def admin_get_all_clients(x_admin_token: str = None):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         supabase = get_supabase_client()
-        from datetime import datetime
-        month = datetime.now().strftime("%Y-%m")
         clients = supabase.table("clients").select("*").execute()
         result = []
         for client in clients.data:
             cid = client["id"]
-            usage = supabase.table("usage").select("conversation_count").eq("client_id", cid).like("month", month + "%").execute()
-            count = usage.data[0]["conversation_count"] if usage.data else 0
+            usage = supabase.table("usage").select("conversation_count").eq("client_id", cid).execute()
+            count = sum(u.get("conversation_count", 0) for u in usage.data) if usage.data else 0
             api_cost = round(count * 0.02, 2)
             charge = round(count * 0.07, 2)
             profit = round(charge - api_cost, 2)
@@ -272,7 +269,7 @@ def admin_get_all_clients(x_admin_token: str = None):
 @app.get("/admin/billing")
 def admin_billing_summary(x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
-    if x_admin_token != expected:
+    if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
@@ -286,8 +283,8 @@ def admin_billing_summary(x_admin_token: str = None):
         rows = []
         for client in clients.data:
             cid = client["id"]
-            usage = supabase.table("usage").select("conversation_count").eq("client_id", cid).like("month", month + "%").execute()
-            count = usage.data[0]["conversation_count"] if usage.data else 0
+            usage = supabase.table("usage").select("conversation_count").eq("client_id", cid).execute()
+            count = sum(u.get("conversation_count", 0) for u in usage.data) if usage.data else 0
             api_cost = round(count * 0.02, 2)
             charge = round(count * 0.07, 2)
             profit = round(charge - api_cost, 2)
@@ -317,7 +314,7 @@ def admin_billing_summary(x_admin_token: str = None):
 @app.post("/admin/clients/{client_id}/toggle")
 def admin_toggle_client(client_id: str, x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
-    if x_admin_token != expected:
+    if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
@@ -335,7 +332,7 @@ def admin_toggle_client(client_id: str, x_admin_token: str = None):
 @app.get("/admin/clients/{client_id}/conversations")
 def admin_view_conversations(client_id: str, x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
-    if x_admin_token != expected:
+    if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
@@ -348,7 +345,7 @@ def admin_view_conversations(client_id: str, x_admin_token: str = None):
 @app.get("/admin/billing/export")
 def admin_export_csv(x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
-    if x_admin_token != expected:
+    if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
@@ -363,8 +360,8 @@ def admin_export_csv(x_admin_token: str = None):
         writer.writerow(["Business Name", "Email", "Conversations", "API Cost ($)", "Charge to Client ($)", "Your Profit ($)"])
         for client in clients.data:
             cid = client["id"]
-            usage = supabase.table("usage").select("conversation_count").eq("client_id", cid).like("month", month + "%").execute()
-            count = usage.data[0]["conversation_count"] if usage.data else 0
+            usage = supabase.table("usage").select("conversation_count").eq("client_id", cid).execute()
+            count = sum(u.get("conversation_count", 0) for u in usage.data) if usage.data else 0
             api_cost = round(count * 0.02, 2)
             charge = round(count * 0.07, 2)
             profit = round(charge - api_cost, 2)
