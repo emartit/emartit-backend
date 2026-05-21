@@ -374,3 +374,18 @@ def admin_export_csv(x_admin_token: str = None):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/notify-ghl")
+async def notify_ghl(request: Request):
+    import httpx
+    data = await request.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                json=data,
+                timeout=10.0
+            )
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
