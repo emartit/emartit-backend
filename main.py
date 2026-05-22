@@ -404,3 +404,21 @@ async def notify_ghl(payload: GHLPayload):
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.delete("/admin/clients/{client_id}")
+def admin_delete_client(client_id: str, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        supabase.table("client_settings").delete().eq("client_id", client_id).execute()
+        supabase.table("client_auth").delete().eq("client_id", client_id).execute()
+        supabase.table("usage").delete().eq("client_id", client_id).execute()
+        supabase.table("conversations").delete().eq("client_id", client_id).execute()
+        supabase.table("clients").delete().eq("id", client_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
