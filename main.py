@@ -57,6 +57,35 @@ class ClientRegister(BaseModel):
     email: str
     password: str
 
+class GHLPayload(BaseModel):
+    contact_name: Optional[str] = ""
+    business_name: Optional[str] = ""
+    business_type: Optional[str] = ""
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    location: Optional[str] = ""
+    working_hours: Optional[str] = ""
+    services: Optional[str] = ""
+    client_id: Optional[str] = ""
+    dashboard_url: Optional[str] = ""
+    login_email: Optional[str] = ""
+    login_password: Optional[str] = ""
+    created_at: Optional[str] = ""
+    account_type: Optional[str] = ""
+    trial_end: Optional[str] = ""
+    payment_link: Optional[str] = ""
+    website: Optional[str] = ""
+
+class TrialCheck(BaseModel):
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    website: Optional[str] = ""
+
+class TrialSetup(BaseModel):
+    trial_end: str
+
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
+
 @app.get("/")
 def root():
     return {"status": "eMart IT Chatbot API is running", "version": "2.0.0"}
@@ -65,52 +94,38 @@ def root():
 def health_check():
     return {"status": "healthy"}
 
-
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-
-        # Get client info
         client = supabase.table("clients").select("*").eq("id", request.client_id).execute()
         if not client.data:
             raise HTTPException(status_code=404, detail="Client not found")
-
         client_data = client.data[0]
         account_type = client_data.get("account_type", "paid")
         is_active = client_data.get("is_active", True)
-
-        # Check if client is active
         if not is_active:
             return ChatResponse(
                 reply="This chatbot is currently inactive. Please contact the business directly.",
                 success=False
             )
-
-        # Trial checks
         if account_type == "trial":
             trial_end = client_data.get("trial_end")
             trial_limit = client_data.get("trial_conversation_limit", 10)
             trial_used = client_data.get("trial_conversations_used", 0)
-
-            # Check trial expiry by date
             if trial_end:
                 trial_end_dt = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
                 if datetime.now(timezone.utc) > trial_end_dt:
-                    # Trial expired by date — update account
                     supabase.table("clients").update({
                         "account_type": "expired",
                         "is_active": False
                     }).eq("id", request.client_id).execute()
-                    # Notify GHL
                     background_tasks.add_task(notify_ghl_trial_expired, client_data, "expired_by_time")
                     return ChatResponse(
                         reply="Our free trial has ended. Please contact us to continue using this service. 😊",
                         success=False
                     )
-
-            # Check trial expiry by conversation limit
             if trial_used >= trial_limit:
                 supabase.table("clients").update({
                     "account_type": "expired",
@@ -121,17 +136,11 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                     reply="Our free trial has ended. Please contact us to continue using this service. 😊",
                     success=False
                 )
-
-            # Increment trial conversation count
             supabase.table("clients").update({
                 "trial_conversations_used": trial_used + 1
             }).eq("id", request.client_id).execute()
-
-            # Send warning when 1 conversation left
             if trial_used + 1 == trial_limit - 1:
                 background_tasks.add_task(notify_ghl_trial_warning, client_data)
-
-        # Process chat normally
         from chat_handler import handle_chat
         reply = await handle_chat(
             client_id=request.client_id,
@@ -139,13 +148,11 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             history=request.conversation_history
         )
         return ChatResponse(reply=reply, success=True)
-
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error in /chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 async def notify_ghl_trial_expired(client_data: dict, reason: str):
     try:
@@ -166,7 +173,6 @@ async def notify_ghl_trial_expired(client_data: dict, reason: str):
     except Exception as e:
         print(f"GHL notification error: {str(e)}")
 
-
 async def notify_ghl_trial_warning(client_data: dict):
     try:
         async with httpx.AsyncClient() as client:
@@ -184,8 +190,6 @@ async def notify_ghl_trial_warning(client_data: dict):
             )
     except Exception as e:
         print(f"GHL warning notification error: {str(e)}")
-
-
 
 @app.post("/clients")
 def create_client(client: ClientCreate):
@@ -262,6 +266,42 @@ def get_client_settings(client_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/clients/{client_id}/trial-status")
+def get_trial_status(client_id: str):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        client = supabase.table("clients").select("*").eq("id", client_id).execute()
+        if not client.data:
+            raise HTTPException(status_code=404, detail="Client not found")
+        c = client.data[0]
+        account_type = c.get("account_type", "paid")
+        trial_end = c.get("trial_end")
+        trial_limit = c.get("trial_conversation_limit", 10)
+        trial_used = c.get("trial_conversations_used", 0)
+        days_remaining = None
+        hours_remaining = None
+        if trial_end and account_type == "trial":
+            trial_end_dt = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
+            remaining = trial_end_dt - datetime.now(timezone.utc)
+            if remaining.total_seconds() > 0:
+                days_remaining = remaining.days
+                hours_remaining = int(remaining.total_seconds() // 3600)
+            else:
+                days_remaining = 0
+                hours_remaining = 0
+        return {
+            "account_type": account_type,
+            "trial_end": trial_end,
+            "days_remaining": days_remaining,
+            "hours_remaining": hours_remaining,
+            "conversations_used": trial_used,
+            "conversations_limit": trial_limit,
+            "conversations_remaining": max(0, trial_limit - trial_used)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/report")
 def get_monthly_report():
     try:
@@ -330,12 +370,9 @@ def login_client(data: ClientLogin):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
 # PHASE 6 — ADMIN PANEL ENDPOINTS
 # ============================================
-
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
 
 @app.post("/admin/login")
 async def admin_login(request: Request):
@@ -362,20 +399,20 @@ def admin_get_all_clients(x_admin_token: str = None):
             api_cost = round(count * 0.02, 2)
             charge = round(count * 0.07, 2)
             profit = round(charge - api_cost, 2)
-           result.append({
-    "id": cid,
-    "business_name": client.get("business_name", ""),
-    "email": client.get("email", ""),
-    "status": "active" if client.get("is_active", True) else "inactive",
-    "account_type": client.get("account_type", "paid"),
-    "trial_end": client.get("trial_end", None),
-    "trial_conversation_limit": client.get("trial_conversation_limit", 10),
-    "trial_conversations_used": client.get("trial_conversations_used", 0),
-    "conversations_this_month": count,
-    "api_cost": api_cost,
-    "charge_to_client": charge,
-    "your_profit": profit
-})
+            result.append({
+                "id": cid,
+                "business_name": client.get("business_name", ""),
+                "email": client.get("email", ""),
+                "status": "active" if client.get("is_active", True) else "inactive",
+                "account_type": client.get("account_type", "paid"),
+                "trial_end": client.get("trial_end", None),
+                "trial_conversation_limit": client.get("trial_conversation_limit", 10),
+                "trial_conversations_used": client.get("trial_conversations_used", 0),
+                "conversations_this_month": count,
+                "api_cost": api_cost,
+                "charge_to_client": charge,
+                "your_profit": profit
+            })
         return {"clients": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -387,7 +424,6 @@ def admin_billing_summary(x_admin_token: str = None):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
-        from datetime import datetime
         supabase = get_supabase_client()
         month = datetime.now().strftime("%Y-%m")
         clients = supabase.table("clients").select("*").execute()
@@ -463,7 +499,6 @@ def admin_export_csv(x_admin_token: str = None):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
-        from datetime import datetime
         from fastapi.responses import StreamingResponse
         import csv, io
         supabase = get_supabase_client()
@@ -489,24 +524,8 @@ def admin_export_csv(x_admin_token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class GHLPayload(BaseModel):
-    contact_name: Optional[str] = ""
-    business_name: Optional[str] = ""
-    business_type: Optional[str] = ""
-    email: Optional[str] = ""
-    phone: Optional[str] = ""
-    location: Optional[str] = ""
-    working_hours: Optional[str] = ""
-    services: Optional[str] = ""
-    client_id: Optional[str] = ""
-    dashboard_url: Optional[str] = ""
-    login_email: Optional[str] = ""
-    login_password: Optional[str] = ""
-    created_at: Optional[str] = ""
-
 @app.post("/admin/notify-ghl")
 async def notify_ghl(payload: GHLPayload):
-    import httpx
     data = payload.dict()
     try:
         async with httpx.AsyncClient() as client:
@@ -518,7 +537,6 @@ async def notify_ghl(payload: GHLPayload):
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
 
 @app.delete("/admin/clients/{client_id}")
 def admin_delete_client(client_id: str, x_admin_token: str = None):
@@ -536,16 +554,6 @@ def admin_delete_client(client_id: str, x_admin_token: str = None):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================
-# TRIAL MANAGEMENT ENDPOINTS
-# ============================================
-
-class TrialCheck(BaseModel):
-    email: Optional[str] = ""
-    phone: Optional[str] = ""
-    website: Optional[str] = ""
 
 @app.post("/admin/check-duplicate-trial")
 def check_duplicate_trial(data: TrialCheck, x_admin_token: str = None):
@@ -595,47 +603,6 @@ def convert_to_paid(client_id: str, x_admin_token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/clients/{client_id}/trial-status")
-def get_trial_status(client_id: str):
-    try:
-        from database import get_supabase_client
-        from datetime import datetime, timezone
-        supabase = get_supabase_client()
-        client = supabase.table("clients").select("*").eq("id", client_id).execute()
-        if not client.data:
-            raise HTTPException(status_code=404, detail="Client not found")
-        c = client.data[0]
-        account_type = c.get("account_type", "paid")
-        trial_end = c.get("trial_end")
-        trial_limit = c.get("trial_conversation_limit", 10)
-        trial_used = c.get("trial_conversations_used", 0)
-        days_remaining = None
-        hours_remaining = None
-        if trial_end and account_type == "trial":
-            trial_end_dt = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
-            remaining = trial_end_dt - datetime.now(timezone.utc)
-            if remaining.total_seconds() > 0:
-                days_remaining = remaining.days
-                hours_remaining = int(remaining.total_seconds() // 3600)
-            else:
-                days_remaining = 0
-                hours_remaining = 0
-        return {
-            "account_type": account_type,
-            "trial_end": trial_end,
-            "days_remaining": days_remaining,
-            "hours_remaining": hours_remaining,
-            "conversations_used": trial_used,
-            "conversations_limit": trial_limit,
-            "conversations_remaining": max(0, trial_limit - trial_used)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class TrialSetup(BaseModel):
-    trial_end: str
-
 @app.post("/admin/set-trial/{client_id}")
 def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
@@ -643,28 +610,6 @@ def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
-        supabase = get_supabase_client()
-        supabase.table("clients").update({
-            "account_type": "trial",
-            "trial_start": datetime.now(timezone.utc).isoformat(),
-            "trial_end": data.trial_end,
-            "trial_conversation_limit": 10,
-            "trial_conversations_used": 0
-        }).eq("id", client_id).execute()
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-class TrialSetup(BaseModel):
-    trial_end: str
-
-@app.post("/admin/set-trial/{client_id}")
-def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
-    expected = "admin_" + ADMIN_PASSWORD
-    if not x_admin_token or x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    try:
-        from database import get_supabase_client
-        from datetime import datetime, timezone
         supabase = get_supabase_client()
         supabase.table("clients").update({
             "account_type": "trial",
