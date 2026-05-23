@@ -653,3 +653,93 @@ def change_password(data: PasswordChange):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PHASE B/C/D/E — LEADS & OFFLINE MODE
+# ============================================
+
+class LeadCapture(BaseModel):
+    client_id: str
+    visitor_name: Optional[str] = ""
+    visitor_email: Optional[str] = ""
+    visitor_phone: Optional[str] = ""
+    message: Optional[str] = ""
+
+class OfflineSettings(BaseModel):
+    client_id: str
+    lead_capture_enabled: Optional[bool] = False
+    lead_capture_name: Optional[bool] = True
+    lead_capture_email: Optional[bool] = True
+    lead_capture_phone: Optional[bool] = False
+    offline_mode_enabled: Optional[bool] = False
+    offline_message: Optional[str] = "We are currently closed. Please leave your details and we will get back to you!"
+    business_hours: Optional[dict] = None
+    quick_replies: Optional[list] = []
+    timezone: Optional[str] = "Asia/Dhaka"
+
+@app.post("/leads/capture")
+async def capture_lead(data: LeadCapture):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table("leads").insert({
+            "client_id": data.client_id,
+            "visitor_name": data.visitor_name,
+            "visitor_email": data.visitor_email,
+            "visitor_phone": data.visitor_phone,
+            "message": data.message
+        }).execute()
+        return {"success": True, "lead": result.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/leads/{client_id}")
+def get_leads(client_id: str):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table("leads").select("*").eq("client_id", client_id).order("created_at", desc=True).execute()
+        return {"leads": result.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/leads/{client_id}")
+def admin_get_leads(client_id: str, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table("leads").select("*").eq("client_id", client_id).order("created_at", desc=True).execute()
+        return {"leads": result.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/clients/offline-settings")
+def save_offline_settings(data: OfflineSettings):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        update_data = {
+            "lead_capture_enabled": data.lead_capture_enabled,
+            "lead_capture_name": data.lead_capture_name,
+            "lead_capture_email": data.lead_capture_email,
+            "lead_capture_phone": data.lead_capture_phone,
+            "offline_mode_enabled": data.offline_mode_enabled,
+            "offline_message": data.offline_message,
+            "quick_replies": data.quick_replies,
+            "timezone": data.timezone
+        }
+        if data.business_hours:
+            update_data["business_hours"] = data.business_hours
+        existing = supabase.table("client_settings").select("*").eq("client_id", data.client_id).execute()
+        if existing.data:
+            supabase.table("client_settings").update(update_data).eq("client_id", data.client_id).execute()
+        else:
+            update_data["client_id"] = data.client_id
+            supabase.table("client_settings").insert(update_data).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
