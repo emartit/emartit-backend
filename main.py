@@ -650,3 +650,25 @@ def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+class TrialSetup(BaseModel):
+    trial_end: str
+
+@app.post("/admin/set-trial/{client_id}")
+def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        from datetime import datetime, timezone
+        supabase = get_supabase_client()
+        supabase.table("clients").update({
+            "account_type": "trial",
+            "trial_start": datetime.now(timezone.utc).isoformat(),
+            "trial_end": data.trial_end,
+            "trial_conversation_limit": 10,
+            "trial_conversations_used": 0
+        }).eq("id", client_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
