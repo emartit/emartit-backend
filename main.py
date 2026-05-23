@@ -362,16 +362,20 @@ def admin_get_all_clients(x_admin_token: str = None):
             api_cost = round(count * 0.02, 2)
             charge = round(count * 0.07, 2)
             profit = round(charge - api_cost, 2)
-            result.append({
-                "id": cid,
-                "business_name": client.get("business_name", ""),
-                "email": client.get("email", ""),
-                "status": "active" if client.get("is_active", True) else "inactive",
-                "conversations_this_month": count,
-                "api_cost": api_cost,
-                "charge_to_client": charge,
-                "your_profit": profit
-            })
+           result.append({
+    "id": cid,
+    "business_name": client.get("business_name", ""),
+    "email": client.get("email", ""),
+    "status": "active" if client.get("is_active", True) else "inactive",
+    "account_type": client.get("account_type", "paid"),
+    "trial_end": client.get("trial_end", None),
+    "trial_conversation_limit": client.get("trial_conversation_limit", 10),
+    "trial_conversations_used": client.get("trial_conversations_used", 0),
+    "conversations_this_month": count,
+    "api_cost": api_cost,
+    "charge_to_client": charge,
+    "your_profit": profit
+})
         return {"clients": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
