@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from datetime import datetime, timezone
+import httpx
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -63,9 +65,73 @@ def root():
 def health_check():
     return {"status": "healthy"}
 
+
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+
+        # Get client info
+        client = supabase.table("clients").select("*").eq("id", request.client_id).execute()
+        if not client.data:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        client_data = client.data[0]
+        account_type = client_data.get("account_type", "paid")
+        is_active = client_data.get("is_active", True)
+
+        # Check if client is active
+        if not is_active:
+            return ChatResponse(
+                reply="This chatbot is currently inactive. Please contact the business directly.",
+                success=False
+            )
+
+        # Trial checks
+        if account_type == "trial":
+            trial_end = client_data.get("trial_end")
+            trial_limit = client_data.get("trial_conversation_limit", 10)
+            trial_used = client_data.get("trial_conversations_used", 0)
+
+            # Check trial expiry by date
+            if trial_end:
+                trial_end_dt = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) > trial_end_dt:
+                    # Trial expired by date — update account
+                    supabase.table("clients").update({
+                        "account_type": "expired",
+                        "is_active": False
+                    }).eq("id", request.client_id).execute()
+                    # Notify GHL
+                    background_tasks.add_task(notify_ghl_trial_expired, client_data, "expired_by_time")
+                    return ChatResponse(
+                        reply="Our free trial has ended. Please contact us to continue using this service. 😊",
+                        success=False
+                    )
+
+            # Check trial expiry by conversation limit
+            if trial_used >= trial_limit:
+                supabase.table("clients").update({
+                    "account_type": "expired",
+                    "is_active": False
+                }).eq("id", request.client_id).execute()
+                background_tasks.add_task(notify_ghl_trial_expired, client_data, "expired_by_usage")
+                return ChatResponse(
+                    reply="Our free trial has ended. Please contact us to continue using this service. 😊",
+                    success=False
+                )
+
+            # Increment trial conversation count
+            supabase.table("clients").update({
+                "trial_conversations_used": trial_used + 1
+            }).eq("id", request.client_id).execute()
+
+            # Send warning when 1 conversation left
+            if trial_used + 1 == trial_limit - 1:
+                background_tasks.add_task(notify_ghl_trial_warning, client_data)
+
+        # Process chat normally
         from chat_handler import handle_chat
         reply = await handle_chat(
             client_id=request.client_id,
@@ -73,9 +139,53 @@ async def chat(request: ChatRequest):
             history=request.conversation_history
         )
         return ChatResponse(reply=reply, success=True)
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in /chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def notify_ghl_trial_expired(client_data: dict, reason: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                json={
+                    "event": "trial_expired",
+                    "reason": reason,
+                    "business_name": client_data.get("business_name", ""),
+                    "email": client_data.get("email", ""),
+                    "client_id": client_data.get("id", ""),
+                    "payment_link": "https://ematity.com/subscribe",
+                    "dashboard_url": "https://emartit.github.io/emartit-dashboard"
+                },
+                timeout=10.0
+            )
+    except Exception as e:
+        print(f"GHL notification error: {str(e)}")
+
+
+async def notify_ghl_trial_warning(client_data: dict):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                json={
+                    "event": "trial_almost_used",
+                    "business_name": client_data.get("business_name", ""),
+                    "email": client_data.get("email", ""),
+                    "client_id": client_data.get("id", ""),
+                    "payment_link": "https://ematity.com/subscribe",
+                    "message": "Only 1 free conversation remaining!"
+                },
+                timeout=10.0
+            )
+    except Exception as e:
+        print(f"GHL warning notification error: {str(e)}")
+
+
 
 @app.post("/clients")
 def create_client(client: ClientCreate):
@@ -420,5 +530,100 @@ def admin_delete_client(client_id: str, x_admin_token: str = None):
         supabase.table("conversations").delete().eq("client_id", client_id).execute()
         supabase.table("clients").delete().eq("id", client_id).execute()
         return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# TRIAL MANAGEMENT ENDPOINTS
+# ============================================
+
+class TrialCheck(BaseModel):
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    website: Optional[str] = ""
+
+@app.post("/admin/check-duplicate-trial")
+def check_duplicate_trial(data: TrialCheck, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        matches = []
+        if data.email:
+            r = supabase.table("clients").select("*").eq("email", data.email).execute()
+            for c in r.data:
+                if c.get("account_type") in ["trial", "expired"]:
+                    matches.append({"field": "email", "business": c.get("business_name"), "type": c.get("account_type")})
+        if data.website:
+            r = supabase.table("client_settings").select("*").eq("website", data.website).execute()
+            for s in r.data:
+                client = supabase.table("clients").select("*").eq("id", s.get("client_id")).execute()
+                if client.data and client.data[0].get("account_type") in ["trial", "expired"]:
+                    matches.append({"field": "website", "business": client.data[0].get("business_name"), "type": client.data[0].get("account_type")})
+        if data.phone:
+            r = supabase.table("client_settings").select("*").eq("phone", data.phone).execute()
+            for s in r.data:
+                client = supabase.table("clients").select("*").eq("id", s.get("client_id")).execute()
+                if client.data and client.data[0].get("account_type") in ["trial", "expired"]:
+                    matches.append({"field": "phone", "business": client.data[0].get("business_name"), "type": client.data[0].get("account_type")})
+        return {"duplicate_found": len(matches) > 0, "matches": matches}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/convert-to-paid/{client_id}")
+def convert_to_paid(client_id: str, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        supabase.table("clients").update({
+            "account_type": "paid",
+            "is_active": True,
+            "trial_start": None,
+            "trial_end": None
+        }).eq("id", client_id).execute()
+        return {"success": True, "message": "Client converted to paid successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/clients/{client_id}/trial-status")
+def get_trial_status(client_id: str):
+    try:
+        from database import get_supabase_client
+        from datetime import datetime, timezone
+        supabase = get_supabase_client()
+        client = supabase.table("clients").select("*").eq("id", client_id).execute()
+        if not client.data:
+            raise HTTPException(status_code=404, detail="Client not found")
+        c = client.data[0]
+        account_type = c.get("account_type", "paid")
+        trial_end = c.get("trial_end")
+        trial_limit = c.get("trial_conversation_limit", 10)
+        trial_used = c.get("trial_conversations_used", 0)
+        days_remaining = None
+        hours_remaining = None
+        if trial_end and account_type == "trial":
+            trial_end_dt = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
+            remaining = trial_end_dt - datetime.now(timezone.utc)
+            if remaining.total_seconds() > 0:
+                days_remaining = remaining.days
+                hours_remaining = int(remaining.total_seconds() // 3600)
+            else:
+                days_remaining = 0
+                hours_remaining = 0
+        return {
+            "account_type": account_type,
+            "trial_end": trial_end,
+            "days_remaining": days_remaining,
+            "hours_remaining": hours_remaining,
+            "conversations_used": trial_used,
+            "conversations_limit": trial_limit,
+            "conversations_remaining": max(0, trial_limit - trial_used)
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
