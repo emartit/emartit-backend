@@ -52,6 +52,7 @@ class ClientSettings(BaseModel):
     bot_avatar: Optional[str] = "robot"
     welcome_message: Optional[str] = "Hi! How can I help you today? 😊"
     custom_prompt: Optional[str] = ""
+    bot_avatar_url: Optional[str] = ""
 
 class ClientLogin(BaseModel):
     email: str
