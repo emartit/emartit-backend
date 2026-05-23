@@ -743,3 +743,32 @@ def save_offline_settings(data: OfflineSettings):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/clients/upload-avatar")
+async def upload_avatar(client_id: str, file: bytes = None, request: Request = None):
+    try:
+        from database import get_supabase_client
+        import base64
+        supabase = get_supabase_client()
+        body = await request.body()
+        data = await request.json()
+        image_data = data.get("image_data", "")
+        file_name = data.get("file_name", "avatar.png")
+        content_type = data.get("content_type", "image/png")
+        if not image_data:
+            raise HTTPException(status_code=400, detail="No image data provided")
+        image_bytes = base64.b64decode(image_data.split(",")[-1])
+        file_path = f"{client_id}/{file_name}"
+        supabase.storage.from_("avatars").upload(
+            file_path,
+            image_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+        public_url = supabase.storage.from_("avatars").get_public_url(file_path)
+        supabase.table("client_settings").update({
+            "bot_avatar_url": public_url
+        }).eq("client_id", client_id).execute()
+        return {"success": True, "url": public_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
