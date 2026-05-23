@@ -621,3 +621,22 @@ def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class PasswordChange(BaseModel):
+    client_id: str
+    email: str
+    new_password: str
+
+@app.post("/auth/change-password")
+def change_password(data: PasswordChange):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
+        supabase.table("client_auth").update({
+            "password_hash": new_hash
+        }).eq("client_id", data.client_id).eq("email", data.email).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
