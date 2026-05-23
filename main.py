@@ -245,7 +245,8 @@ def save_client_settings(settings: ClientSettings):
     "chat_position": settings.chat_position,
     "bot_avatar": settings.bot_avatar,
     "welcome_message": settings.welcome_message,
-    "custom_prompt": settings.custom_prompt
+    "custom_prompt": settings.custom_prompt,
+    "bot_avatar_url": settings.bot_avatar_url,
 }
         
         if existing.data:
