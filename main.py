@@ -46,6 +46,11 @@ class ClientSettings(BaseModel):
     website: Optional[str] = ""
     bot_name: Optional[str] = "Assistant"
     bot_color: Optional[str] = "#1a569a"
+    bubble_color: Optional[str] = "#1a569a"
+    header_color: Optional[str] = "#1a569a"
+    chat_position: Optional[str] = "right"
+    bot_avatar: Optional[str] = "robot"
+    welcome_message: Optional[str] = "Hi! How can I help you today? 😊"
     custom_prompt: Optional[str] = ""
 
 class ClientLogin(BaseModel):
