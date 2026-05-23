@@ -227,18 +227,26 @@ def save_client_settings(settings: ClientSettings):
         from database import get_supabase_client
         supabase = get_supabase_client()
         existing = supabase.table("client_settings").select("*").eq("client_id", settings.client_id).execute()
+
+
         data = {
-            "client_id": settings.client_id,
-            "business_description": settings.business_description,
-            "services": settings.services,
-            "working_hours": settings.working_hours,
-            "location": settings.location,
-            "phone": settings.phone,
-            "website": settings.website,
-            "bot_name": settings.bot_name,
-            "bot_color": settings.bot_color,
-            "custom_prompt": settings.custom_prompt
-        }
+    "client_id": settings.client_id,
+    "business_description": settings.business_description,
+    "services": settings.services,
+    "working_hours": settings.working_hours,
+    "location": settings.location,
+    "phone": settings.phone,
+    "website": settings.website,
+    "bot_name": settings.bot_name,
+    "bot_color": settings.bot_color,
+    "bubble_color": settings.bubble_color,
+    "header_color": settings.header_color,
+    "chat_position": settings.chat_position,
+    "bot_avatar": settings.bot_avatar,
+    "welcome_message": settings.welcome_message,
+    "custom_prompt": settings.custom_prompt
+}
+        
         if existing.data:
             result = supabase.table("client_settings").update(data).eq("client_id", settings.client_id).execute()
         else:
