@@ -53,6 +53,13 @@ class ClientSettings(BaseModel):
     welcome_message: Optional[str] = "Hi! How can I help you today? 😊"
     custom_prompt: Optional[str] = ""
     bot_avatar_url: Optional[str] = ""
+    knowledge_base: Optional[str] = ""
+    faq_items: Optional[list] = []
+    proactive_enabled: Optional[bool] = False
+    proactive_message: Optional[str] = "👋 Hi! Need help? I'm here!"
+    proactive_delay: Optional[int] = 8
+    notification_email: Optional[str] = ""
+    notification_enabled: Optional[bool] = False
 
 class ClientLogin(BaseModel):
     email: str
@@ -247,6 +254,13 @@ def save_client_settings(settings: ClientSettings):
     "welcome_message": settings.welcome_message,
     "custom_prompt": settings.custom_prompt,
     "bot_avatar_url": settings.bot_avatar_url,
+    "knowledge_base": settings.knowledge_base,
+"faq_items": settings.faq_items,
+"proactive_enabled": settings.proactive_enabled,
+"proactive_message": settings.proactive_message,
+"proactive_delay": settings.proactive_delay,
+"notification_email": settings.notification_email,
+"notification_enabled": settings.notification_enabled,
 }
         
         if existing.data:
