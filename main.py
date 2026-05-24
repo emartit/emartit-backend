@@ -183,32 +183,43 @@ def admin_analytics(x_admin_token: str = None):
         # Conversations per day last 30 days
         result = supabase.rpc('get_daily_conversations', {}).execute() if False else None
 
-        # Manual daily count
         from datetime import datetime, timedelta, timezone
+        
+        # Get ALL conversations at once — much more efficient
+        all_convos = supabase.table("conversations").select("client_id,role,created_at").eq("role", "user").execute()
+        convos = all_convos.data or []
+        
+        # Build daily counts for last 30 days
         days_data = []
         for i in range(29, -1, -1):
             day = datetime.now(timezone.utc) - timedelta(days=i)
             day_str = day.strftime("%Y-%m-%d")
-            day_start = day.strftime("%Y-%m-%dT00:00:00+00:00")
-            day_end = day.strftime("%Y-%m-%dT23:59:59+00:00")
-            count = supabase.table("conversations").select("id", count="exact").eq("role", "user").gte("created_at", day_start).lte("created_at", day_end).execute()
+            count = sum(1 for c in convos if c.get("created_at", "").startswith(day_str))
             days_data.append({
                 "date": day_str,
                 "label": day.strftime("%b %d"),
-                "conversations": count.count or 0
+                "conversations": count
             })
 
         # Per client totals
         clients = supabase.table("clients").select("*").execute()
         client_stats = []
         for c in clients.data:
-            total = supabase.table("conversations").select("id", count="exact").eq("client_id", c["id"]).eq("role", "user").execute()
+            total = sum(1 for conv in convos if conv.get("client_id") == c["id"])
             client_stats.append({
                 "business_name": c.get("business_name", ""),
-                "total_conversations": total.count or 0
+                "total_conversations": total
             })
         client_stats.sort(key=lambda x: x["total_conversations"], reverse=True)
 
+        # Peak hours
+        hours_data = []
+        for h in range(24):
+            count = sum(1 for c in convos if len(c.get("created_at","")) > 13 and int(c["created_at"][11:13]) == h)
+            hours_data.append({
+                "hour": f"{h:02d}:00",
+                "count": count
+            })
         # Peak hours
         hours_data = []
         for h in range(24):
