@@ -167,6 +167,104 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         print(f"Error in /chat endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================
+# ANALYTICS ENDPOINTS
+# ============================================
+
+@app.get("/admin/analytics")
+def admin_analytics(x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+
+        # Conversations per day last 30 days
+        result = supabase.rpc('get_daily_conversations', {}).execute() if False else None
+
+        # Manual daily count
+        from datetime import datetime, timedelta, timezone
+        days_data = []
+        for i in range(29, -1, -1):
+            day = datetime.now(timezone.utc) - timedelta(days=i)
+            day_str = day.strftime("%Y-%m-%d")
+            day_start = day.strftime("%Y-%m-%dT00:00:00+00:00")
+            day_end = day.strftime("%Y-%m-%dT23:59:59+00:00")
+            count = supabase.table("conversations").select("id", count="exact").eq("role", "user").gte("created_at", day_start).lte("created_at", day_end).execute()
+            days_data.append({
+                "date": day_str,
+                "label": day.strftime("%b %d"),
+                "conversations": count.count or 0
+            })
+
+        # Per client totals
+        clients = supabase.table("clients").select("*").execute()
+        client_stats = []
+        for c in clients.data:
+            total = supabase.table("conversations").select("id", count="exact").eq("client_id", c["id"]).eq("role", "user").execute()
+            client_stats.append({
+                "business_name": c.get("business_name", ""),
+                "total_conversations": total.count or 0
+            })
+        client_stats.sort(key=lambda x: x["total_conversations"], reverse=True)
+
+        # Peak hours
+        hours_data = []
+        for h in range(24):
+            hour_str = f"{h:02d}"
+            count = supabase.table("conversations").select("id", count="exact").eq("role", "user").like("created_at", f"% {hour_str}:%").execute()
+            hours_data.append({
+                "hour": f"{h:02d}:00",
+                "count": count.count or 0
+            })
+
+        return {
+            "daily": days_data,
+            "per_client": client_stats,
+            "peak_hours": hours_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analytics/{client_id}")
+def client_analytics(client_id: str):
+    try:
+        from database import get_supabase_client
+        from datetime import datetime, timedelta, timezone
+        supabase = get_supabase_client()
+
+        # Daily conversations last 30 days for this client
+        days_data = []
+        for i in range(29, -1, -1):
+            day = datetime.now(timezone.utc) - timedelta(days=i)
+            day_str = day.strftime("%Y-%m-%d")
+            day_start = day.strftime("%Y-%m-%dT00:00:00+00:00")
+            day_end = day.strftime("%Y-%m-%dT23:59:59+00:00")
+            count = supabase.table("conversations").select("id", count="exact").eq("client_id", client_id).eq("role", "user").gte("created_at", day_start).lte("created_at", day_end).execute()
+            days_data.append({
+                "date": day_str,
+                "label": day.strftime("%b %d"),
+                "conversations": count.count or 0
+            })
+
+        # All time total
+        total = supabase.table("conversations").select("id", count="exact").eq("client_id", client_id).eq("role", "user").execute()
+
+        # This month total
+        now = datetime.now(timezone.utc)
+        month_start = now.strftime("%Y-%m-01T00:00:00+00:00")
+        month_total = supabase.table("conversations").select("id", count="exact").eq("client_id", client_id).eq("role", "user").gte("created_at", month_start).execute()
+
+        return {
+            "daily": days_data,
+            "total_all_time": total.count or 0,
+            "total_this_month": month_total.count or 0
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 async def notify_ghl_trial_expired(client_data: dict, reason: str):
     try:
         async with httpx.AsyncClient() as client:
