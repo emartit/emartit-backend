@@ -26,10 +26,26 @@ def build_system_prompt(settings: dict) -> str:
         prompt += f"Phone: {settings['phone']}\n"
     if settings.get('website'):
         prompt += f"Website: {settings['website']}\n"
-    if settings.get('custom_prompt'):
+  if settings.get('custom_prompt'):
         prompt += f"\n{settings['custom_prompt']}\n"
-    
+
+    if settings.get('knowledge_base'):
+        prompt += f"\n--- BUSINESS KNOWLEDGE BASE ---\n{settings['knowledge_base']}\n--- END KNOWLEDGE BASE ---\n"
+
+    if settings.get('faq_items'):
+        faqs = settings['faq_items']
+        if faqs and len(faqs) > 0:
+            prompt += "\n--- FREQUENTLY ASKED QUESTIONS ---\n"
+            for faq in faqs:
+                q = faq.get('question', '') if isinstance(faq, dict) else ''
+                a = faq.get('answer', '') if isinstance(faq, dict) else ''
+                if q and a:
+                    prompt += f"Q: {q}\nA: {a}\n\n"
+            prompt += "--- END FAQ ---\n"
+
     prompt += "\nAlways be warm, polite, and helpful. Keep answers concise — 2 to 4 sentences when possible."
+    prompt += "\nWhen answering, prioritize information from the Knowledge Base and FAQ above."
+    prompt += "\nIf the answer is not in your knowledge base, say: 'I don't have that information right now — please contact us directly.'"
     return prompt
 
 async def handle_chat(client_id: str, message: str, history: list) -> str:
