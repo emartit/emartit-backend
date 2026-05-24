@@ -194,7 +194,7 @@ def admin_analytics(x_admin_token: str = None):
         for i in range(29, -1, -1):
             day = datetime.now(timezone.utc) - timedelta(days=i)
             day_str = day.strftime("%Y-%m-%d")
-            count = sum(1 for c in convos if c.get("created_at", "").startswith(day_str))
+            count = sum(1 for c in convos if c.get("created_at", "")[:10] == day_str)
             days_data.append({
                 "date": day_str,
                 "label": day.strftime("%b %d"),
