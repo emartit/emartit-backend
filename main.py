@@ -172,23 +172,20 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 # ============================================
 
 @app.get("/admin/analytics")
+
 def admin_analytics(x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
     if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
+        from datetime import datetime, timedelta, timezone
         supabase = get_supabase_client()
 
-        # Conversations per day last 30 days
-        result = supabase.rpc('get_daily_conversations', {}).execute() if False else None
+        # Get ALL user conversations at once
+        all_convos = supabase.table("conversations").select("client_id,role,created_at").execute()
+        convos = [c for c in (all_convos.data or []) if c.get("role") == "user"]
 
-        from datetime import datetime, timedelta, timezone
-        
-        # Get ALL conversations at once — much more efficient
-        all_convos = supabase.table("conversations").select("client_id,role,created_at").eq("role", "user").execute()
-        convos = all_convos.data or []
-        
         # Build daily counts for last 30 days
         days_data = []
         for i in range(29, -1, -1):
@@ -215,19 +212,18 @@ def admin_analytics(x_admin_token: str = None):
         # Peak hours
         hours_data = []
         for h in range(24):
-            count = sum(1 for c in convos if len(c.get("created_at","")) > 13 and c["created_at"][11:13].isdigit() and int(c["created_at"][11:13]) == h)
+            count = 0
+            for c in convos:
+                created = c.get("created_at", "")
+                if len(created) >= 13:
+                    try:
+                        if int(created[11:13]) == h:
+                            count += 1
+                    except:
+                        pass
             hours_data.append({
                 "hour": f"{h:02d}:00",
                 "count": count
-            })
-        # Peak hours
-        hours_data = []
-        for h in range(24):
-            hour_str = f"{h:02d}"
-            count = supabase.table("conversations").select("id", count="exact").eq("role", "user").like("created_at", f"% {hour_str}:%").execute()
-            hours_data.append({
-                "hour": f"{h:02d}:00",
-                "count": count.count or 0
             })
 
         return {
