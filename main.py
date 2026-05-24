@@ -215,7 +215,7 @@ def admin_analytics(x_admin_token: str = None):
         # Peak hours
         hours_data = []
         for h in range(24):
-            count = sum(1 for c in convos if len(c.get("created_at","")) > 13 and int(c["created_at"][11:13]) == h)
+            count = sum(1 for c in convos if len(c.get("created_at","")) > 13 and c["created_at"][11:13].isdigit() and int(c["created_at"][11:13]) == h)
             hours_data.append({
                 "hour": f"{h:02d}:00",
                 "count": count
