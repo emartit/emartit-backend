@@ -893,3 +893,183 @@ async def upload_avatar(client_id: str, file: bytes = None, request: Request = N
         return {"success": True, "url": public_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+# ============================================
+# TRIAL REQUESTS ENDPOINTS
+# ============================================
+
+class TrialRequest(BaseModel):
+    name: Optional[str] = ""
+    business_name: Optional[str] = ""
+    business_type: Optional[str] = ""
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    website: Optional[str] = ""
+    location: Optional[str] = ""
+    working_hours: Optional[str] = ""
+    services: Optional[str] = ""
+    description: Optional[str] = ""
+    price_range: Optional[str] = ""
+    special_instructions: Optional[str] = ""
+    request_type: Optional[str] = "trial"
+    ghl_contact_id: Optional[str] = ""
+
+@app.post("/requests/incoming")
+async def incoming_request(request: Request):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        data = await request.json()
+
+        # Save to trial_requests table
+        result = supabase.table("trial_requests").insert({
+            "name": data.get("name", ""),
+            "business_name": data.get("business_name", ""),
+            "business_type": data.get("business_type", ""),
+            "email": data.get("email", ""),
+            "phone": data.get("phone", ""),
+            "website": data.get("website", ""),
+            "location": data.get("location", ""),
+            "working_hours": data.get("working_hours", ""),
+            "services": data.get("services", ""),
+            "description": data.get("description", ""),
+            "price_range": data.get("price_range", ""),
+            "special_instructions": data.get("special_instructions", ""),
+            "request_type": data.get("request_type", "trial"),
+            "ghl_contact_id": data.get("contact_id", ""),
+            "status": "pending"
+        }).execute()
+
+        return {"success": True, "message": "Request received"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/requests")
+def get_all_requests(x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table("trial_requests").select("*").order("created_at", desc=True).execute()
+        return {"requests": result.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/requests/{request_id}/approve")
+async def approve_request(request_id: str, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        import hashlib
+        import secrets
+        supabase = get_supabase_client()
+
+        # Get the request
+        req = supabase.table("trial_requests").select("*").eq("id", request_id).execute()
+        if not req.data:
+            raise HTTPException(status_code=404, detail="Request not found")
+        r = req.data[0]
+
+        # Generate password
+        password = secrets.token_urlsafe(8)
+
+        # Create client
+        client_result = supabase.table("clients").insert({
+            "name": r["name"],
+            "email": r["email"],
+            "business_name": r["business_name"],
+            "business_type": r["business_type"]
+        }).execute()
+        client_id = client_result.data[0]["id"]
+
+        # Set trial or paid
+        if r["request_type"] == "trial":
+            from datetime import datetime, timedelta, timezone
+            trial_end = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+            supabase.table("clients").update({
+                "account_type": "trial",
+                "trial_start": datetime.now(timezone.utc).isoformat(),
+                "trial_end": trial_end,
+                "trial_conversation_limit": 10,
+                "trial_conversations_used": 0
+            }).eq("id", client_id).execute()
+        else:
+            supabase.table("clients").update({
+                "account_type": "paid",
+                "is_active": True
+            }).eq("id", client_id).execute()
+
+        # Create login
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        supabase.table("client_auth").insert({
+            "client_id": client_id,
+            "email": r["email"],
+            "password_hash": password_hash
+        }).execute()
+
+        # Save settings
+        supabase.table("client_settings").insert({
+            "client_id": client_id,
+            "business_description": r["description"] or r["business_name"],
+            "services": r["services"] or "",
+            "working_hours": r["working_hours"] or "",
+            "location": r["location"] or "",
+            "phone": r["phone"] or "",
+            "website": r["website"] or "",
+            "bot_name": "Assistant",
+            "bot_color": "#1a569a",
+            "custom_prompt": r["special_instructions"] or ""
+        }).execute()
+
+        # Update request status
+        supabase.table("trial_requests").update({
+            "status": "approved"
+        }).eq("id", request_id).execute()
+
+        # Notify GHL
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                    json={
+                        "event": "request_approved",
+                        "account_type": r["request_type"],
+                        "business_name": r["business_name"],
+                        "email": r["email"],
+                        "client_id": client_id,
+                        "login_email": r["email"],
+                        "login_password": password,
+                        "dashboard_url": "https://emartit.github.io/emartit-dashboard",
+                        "payment_link": "https://www.emartit.com/subscribe"
+                    },
+                    timeout=10.0
+                )
+        except Exception as e:
+            print(f"GHL notification error: {str(e)}")
+
+        return {
+            "success": True,
+            "client_id": client_id,
+            "password": password,
+            "message": f"Account created successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/requests/{request_id}/reject")
+def reject_request(request_id: str, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        supabase.table("trial_requests").update({
+            "status": "rejected"
+        }).eq("id", request_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
