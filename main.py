@@ -1073,3 +1073,37 @@ def reject_request(request_id: str, x_admin_token: str = None):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/requests/upload-doc")
+async def upload_doc(request: Request):
+    try:
+        from database import get_supabase_client
+        import base64
+        supabase = get_supabase_client()
+        data = await request.json()
+        file_data = data.get("file_data", "")
+        file_name = data.get("file_name", "document.pdf")
+        content_type = data.get("content_type", "application/pdf")
+        request_email = data.get("email", "unknown")
+        if not file_data:
+            raise HTTPException(status_code=400, detail="No file data provided")
+        # Decode base64
+        file_bytes = base64.b64decode(file_data.split(",")[-1])
+        # Check file size — max 5MB
+        if len(file_bytes) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB.")
+        # Create unique file path
+        import uuid
+        file_path = f"{request_email}/{uuid.uuid4()}_{file_name}"
+        # Upload to Supabase storage
+        supabase.storage.from_("business-docs").upload(
+            file_path,
+            file_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+        # Get public URL
+        public_url = supabase.storage.from_("business-docs").get_public_url(file_path)
+        return {"success": True, "url": public_url, "file_name": file_name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
