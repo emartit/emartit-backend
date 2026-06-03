@@ -938,7 +938,17 @@ async def incoming_request(request: Request):
             "ghl_contact_id": data.get("contact_id", ""),
             "status": "pending"
         }).execute()
-
+# Forward to GHL
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/a1e70441-b76b-4a2a-b91f-d1b1ac4db821",
+                    json=data,
+                    timeout=10.0
+                )
+        except Exception as e:
+            print(f"GHL forward error: {str(e)}")
+            
         return {"success": True, "message": "Request received"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
