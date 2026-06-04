@@ -936,6 +936,7 @@ async def incoming_request(request: Request):
             "special_instructions": data.get("special_instructions", ""),
             "request_type": data.get("request_type", "trial"),
             "ghl_contact_id": data.get("contact_id", ""),
+            "document_url": data.get("document_url", ""),
             "status": "pending"
         }).execute()
 # Forward to GHL
