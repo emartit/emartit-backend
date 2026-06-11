@@ -1208,3 +1208,18 @@ async def upload_doc(request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/requests/{request_id}/set-type")
+def set_request_type(request_id: str, request_type: str, x_admin_token: str = None):
+    expected = "admin_" + ADMIN_PASSWORD
+    if not x_admin_token or x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        supabase.table("trial_requests").update({
+            "request_type": request_type
+        }).eq("id", request_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
