@@ -1,11 +1,12 @@
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 import hashlib
+import secrets as secrets_module
 
 app = FastAPI(title="eMart IT Chatbot API", version="2.0.0")
 
@@ -97,6 +98,53 @@ class TrialCheck(BaseModel):
 class TrialSetup(BaseModel):
     trial_end: str
 
+class PasswordChange(BaseModel):
+    client_id: str
+    email: str
+    new_password: str
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
+
+class LeadCapture(BaseModel):
+    client_id: str
+    visitor_name: Optional[str] = ""
+    visitor_email: Optional[str] = ""
+    visitor_phone: Optional[str] = ""
+    message: Optional[str] = ""
+
+class OfflineSettings(BaseModel):
+    client_id: str
+    lead_capture_enabled: Optional[bool] = False
+    lead_capture_name: Optional[bool] = True
+    lead_capture_email: Optional[bool] = True
+    lead_capture_phone: Optional[bool] = False
+    offline_mode_enabled: Optional[bool] = False
+    offline_message: Optional[str] = "We are currently closed. Please leave your details and we will get back to you!"
+    business_hours: Optional[dict] = None
+    quick_replies: Optional[list] = []
+    timezone: Optional[str] = "Asia/Dhaka"
+
+class TrialRequest(BaseModel):
+    name: Optional[str] = ""
+    business_name: Optional[str] = ""
+    business_type: Optional[str] = ""
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    website: Optional[str] = ""
+    location: Optional[str] = ""
+    working_hours: Optional[str] = ""
+    services: Optional[str] = ""
+    description: Optional[str] = ""
+    price_range: Optional[str] = ""
+    special_instructions: Optional[str] = ""
+    request_type: Optional[str] = "trial"
+    ghl_contact_id: Optional[str] = ""
+
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
 
 @app.get("/")
@@ -172,21 +220,15 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 # ============================================
 
 @app.get("/admin/analytics")
-
 def admin_analytics(x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
     if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
-        from datetime import datetime, timedelta, timezone
         supabase = get_supabase_client()
-
-        # Get ALL user conversations at once
         all_convos = supabase.table("conversations").select("client_id,role,created_at").execute()
         convos = [c for c in (all_convos.data or []) if c.get("role") == "user"]
-
-        # Build daily counts for last 30 days
         days_data = []
         for i in range(29, -1, -1):
             day = datetime.now(timezone.utc) - timedelta(days=i)
@@ -197,8 +239,6 @@ def admin_analytics(x_admin_token: str = None):
                 "label": day.strftime("%b %d"),
                 "conversations": count
             })
-
-        # Per client totals
         clients = supabase.table("clients").select("*").execute()
         client_stats = []
         for c in clients.data:
@@ -208,8 +248,6 @@ def admin_analytics(x_admin_token: str = None):
                 "total_conversations": total
             })
         client_stats.sort(key=lambda x: x["total_conversations"], reverse=True)
-
-        # Peak hours
         hours_data = []
         for h in range(24):
             count = 0
@@ -221,16 +259,8 @@ def admin_analytics(x_admin_token: str = None):
                             count += 1
                     except:
                         pass
-            hours_data.append({
-                "hour": f"{h:02d}:00",
-                "count": count
-            })
-
-        return {
-            "daily": days_data,
-            "per_client": client_stats,
-            "peak_hours": hours_data
-        }
+            hours_data.append({"hour": f"{h:02d}:00", "count": count})
+        return {"daily": days_data, "per_client": client_stats, "peak_hours": hours_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -239,10 +269,7 @@ def admin_analytics(x_admin_token: str = None):
 def client_analytics(client_id: str):
     try:
         from database import get_supabase_client
-        from datetime import datetime, timedelta, timezone
         supabase = get_supabase_client()
-
-        # Daily conversations last 30 days for this client
         days_data = []
         for i in range(29, -1, -1):
             day = datetime.now(timezone.utc) - timedelta(days=i)
@@ -255,15 +282,10 @@ def client_analytics(client_id: str):
                 "label": day.strftime("%b %d"),
                 "conversations": count.count or 0
             })
-
-        # All time total
         total = supabase.table("conversations").select("id", count="exact").eq("client_id", client_id).eq("role", "user").execute()
-
-        # This month total
         now = datetime.now(timezone.utc)
         month_start = now.strftime("%Y-%m-01T00:00:00+00:00")
         month_total = supabase.table("conversations").select("id", count="exact").eq("client_id", client_id).eq("role", "user").gte("created_at", month_start).execute()
-
         return {
             "daily": days_data,
             "total_all_time": total.count or 0,
@@ -340,34 +362,31 @@ def save_client_settings(settings: ClientSettings):
         from database import get_supabase_client
         supabase = get_supabase_client()
         existing = supabase.table("client_settings").select("*").eq("client_id", settings.client_id).execute()
-
-
         data = {
-    "client_id": settings.client_id,
-    "business_description": settings.business_description,
-    "services": settings.services,
-    "working_hours": settings.working_hours,
-    "location": settings.location,
-    "phone": settings.phone,
-    "website": settings.website,
-    "bot_name": settings.bot_name,
-    "bot_color": settings.bot_color,
-    "bubble_color": settings.bubble_color,
-    "header_color": settings.header_color,
-    "chat_position": settings.chat_position,
-    "bot_avatar": settings.bot_avatar,
-    "welcome_message": settings.welcome_message,
-    "custom_prompt": settings.custom_prompt,
-    "bot_avatar_url": settings.bot_avatar_url,
-    "knowledge_base": settings.knowledge_base,
-"faq_items": settings.faq_items,
-"proactive_enabled": settings.proactive_enabled,
-"proactive_message": settings.proactive_message,
-"proactive_delay": settings.proactive_delay,
-"notification_email": settings.notification_email,
-"notification_enabled": settings.notification_enabled,
-}
-        
+            "client_id": settings.client_id,
+            "business_description": settings.business_description,
+            "services": settings.services,
+            "working_hours": settings.working_hours,
+            "location": settings.location,
+            "phone": settings.phone,
+            "website": settings.website,
+            "bot_name": settings.bot_name,
+            "bot_color": settings.bot_color,
+            "bubble_color": settings.bubble_color,
+            "header_color": settings.header_color,
+            "chat_position": settings.chat_position,
+            "bot_avatar": settings.bot_avatar,
+            "welcome_message": settings.welcome_message,
+            "custom_prompt": settings.custom_prompt,
+            "bot_avatar_url": settings.bot_avatar_url,
+            "knowledge_base": settings.knowledge_base,
+            "faq_items": settings.faq_items,
+            "proactive_enabled": settings.proactive_enabled,
+            "proactive_message": settings.proactive_message,
+            "proactive_delay": settings.proactive_delay,
+            "notification_email": settings.notification_email,
+            "notification_enabled": settings.notification_enabled,
+        }
         if existing.data:
             result = supabase.table("client_settings").update(data).eq("client_id", settings.client_id).execute()
         else:
@@ -756,12 +775,6 @@ def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-class PasswordChange(BaseModel):
-    client_id: str
-    email: str
-    new_password: str
-
 @app.post("/auth/change-password")
 def change_password(data: PasswordChange):
     try:
@@ -775,29 +788,9 @@ def change_password(data: PasswordChange):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
-# PHASE B/C/D/E — LEADS & OFFLINE MODE
+# LEADS & OFFLINE MODE
 # ============================================
-
-class LeadCapture(BaseModel):
-    client_id: str
-    visitor_name: Optional[str] = ""
-    visitor_email: Optional[str] = ""
-    visitor_phone: Optional[str] = ""
-    message: Optional[str] = ""
-
-class OfflineSettings(BaseModel):
-    client_id: str
-    lead_capture_enabled: Optional[bool] = False
-    lead_capture_name: Optional[bool] = True
-    lead_capture_email: Optional[bool] = True
-    lead_capture_phone: Optional[bool] = False
-    offline_mode_enabled: Optional[bool] = False
-    offline_message: Optional[str] = "We are currently closed. Please leave your details and we will get back to you!"
-    business_hours: Optional[dict] = None
-    quick_replies: Optional[list] = []
-    timezone: Optional[str] = "Asia/Dhaka"
 
 @app.post("/leads/capture")
 async def capture_lead(data: LeadCapture):
@@ -865,7 +858,6 @@ def save_offline_settings(data: OfflineSettings):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/clients/upload-avatar")
 async def upload_avatar(client_id: str, file: bytes = None, request: Request = None):
     try:
@@ -893,25 +885,10 @@ async def upload_avatar(client_id: str, file: bytes = None, request: Request = N
         return {"success": True, "url": public_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================
 # TRIAL REQUESTS ENDPOINTS
 # ============================================
-
-class TrialRequest(BaseModel):
-    name: Optional[str] = ""
-    business_name: Optional[str] = ""
-    business_type: Optional[str] = ""
-    email: Optional[str] = ""
-    phone: Optional[str] = ""
-    website: Optional[str] = ""
-    location: Optional[str] = ""
-    working_hours: Optional[str] = ""
-    services: Optional[str] = ""
-    description: Optional[str] = ""
-    price_range: Optional[str] = ""
-    special_instructions: Optional[str] = ""
-    request_type: Optional[str] = "trial"
-    ghl_contact_id: Optional[str] = ""
 
 @app.post("/requests/incoming")
 async def incoming_request(request: Request):
@@ -919,8 +896,6 @@ async def incoming_request(request: Request):
         from database import get_supabase_client
         supabase = get_supabase_client()
         data = await request.json()
-
-        # Save to trial_requests table
         result = supabase.table("trial_requests").insert({
             "name": data.get("name", ""),
             "business_name": data.get("business_name", ""),
@@ -939,7 +914,6 @@ async def incoming_request(request: Request):
             "document_url": data.get("document_url", ""),
             "status": "pending"
         }).execute()
-# Forward to GHL
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
@@ -949,7 +923,6 @@ async def incoming_request(request: Request):
                 )
         except Exception as e:
             print(f"GHL forward error: {str(e)}")
-            
         return {"success": True, "message": "Request received"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -974,34 +947,21 @@ async def approve_request(request_id: str, x_admin_token: str = None):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from database import get_supabase_client
-        import hashlib
         import secrets
         supabase = get_supabase_client()
-
-        # Get the request
         req = supabase.table("trial_requests").select("*").eq("id", request_id).execute()
         if not req.data:
             raise HTTPException(status_code=404, detail="Request not found")
         r = req.data[0]
-
-        # Generate password
         password = secrets.token_urlsafe(8)
-
- # Check if email already exists
         existing_client = supabase.table("clients").select("*").eq("email", r["email"]).execute()
         if existing_client.data:
             existing = existing_client.data[0]
             existing_type = existing.get("account_type", "paid")
-
-            # Already active paid — block completely
             if existing_type == "paid":
                 raise HTTPException(status_code=400, detail="This email already has an active PAID account.")
-
-            # Trying to give second trial — block and force paid only
             if existing_type in ["trial", "expired"] and r["request_type"] == "trial":
                 raise HTTPException(status_code=400, detail="⚠️ This client already used their free trial. You can only CONVERT TO PAID — click Approve as Paid instead.")
-
-            # Existing trial or expired + approving as paid — convert
             if existing_type in ["trial", "expired"] and r["request_type"] == "paid":
                 supabase.table("clients").update({
                     "account_type": "paid",
@@ -1010,11 +970,7 @@ async def approve_request(request_id: str, x_admin_token: str = None):
                     "trial_end": None,
                     "trial_conversations_used": 0
                 }).eq("id", existing["id"]).execute()
-
-                supabase.table("trial_requests").update({
-                    "status": "approved"
-                }).eq("id", request_id).execute()
-
+                supabase.table("trial_requests").update({"status": "approved"}).eq("id", request_id).execute()
                 try:
                     async with httpx.AsyncClient() as client:
                         await client.post(
@@ -1034,50 +990,12 @@ async def approve_request(request_id: str, x_admin_token: str = None):
                         )
                 except Exception as e:
                     print(f"GHL error: {str(e)}")
-
                 return {
                     "success": True,
                     "client_id": existing["id"],
                     "password": "Use existing password",
                     "message": "✅ Trial client successfully converted to PAID!"
                 }
-                supabase.table("clients").update({
-                    "account_type": "paid",
-                    "is_active": True,
-                    "trial_start": None,
-                    "trial_end": None,
-                    "trial_conversations_used": 0
-                }).eq("id", existing["id"]).execute()
-                supabase.table("trial_requests").update({
-                    "status": "approved"
-                }).eq("id", request_id).execute()
-                try:
-                    async with httpx.AsyncClient() as client:
-                        await client.post(
-                            "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
-                            json={
-                                "event": "request_approved",
-                                "account_type": "paid",
-                                "business_name": existing.get("business_name", ""),
-                                "email": existing.get("email", ""),
-                                "client_id": existing["id"],
-                                "login_email": existing.get("email", ""),
-                                "login_password": "Use your existing password",
-                                "dashboard_url": "https://emartit.github.io/emartit-dashboard",
-                                "payment_link": "https://www.emartit.com/subscribe"
-                            },
-                            timeout=10.0
-                        )
-                except Exception as e:
-                    print(f"GHL error: {str(e)}")
-                return {
-                    "success": True,
-                    "client_id": existing["id"],
-                    "password": "Use existing password",
-                    "message": "✅ Existing trial client successfully converted to PAID!"
-                }
-
-        # Create new client
         client_result = supabase.table("clients").insert({
             "name": r["name"],
             "email": r["email"],
@@ -1085,10 +1003,7 @@ async def approve_request(request_id: str, x_admin_token: str = None):
             "business_type": r["business_type"]
         }).execute()
         client_id = client_result.data[0]["id"]
-
-        # Set trial or paid
         if r["request_type"] == "trial":
-            from datetime import datetime, timedelta, timezone
             trial_end = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
             supabase.table("clients").update({
                 "account_type": "trial",
@@ -1102,16 +1017,12 @@ async def approve_request(request_id: str, x_admin_token: str = None):
                 "account_type": "paid",
                 "is_active": True
             }).eq("id", client_id).execute()
-
-        # Create login
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         supabase.table("client_auth").insert({
             "client_id": client_id,
             "email": r["email"],
             "password_hash": password_hash
         }).execute()
-
-        # Save settings
         supabase.table("client_settings").insert({
             "client_id": client_id,
             "business_description": r["description"] or r["business_name"],
@@ -1124,13 +1035,7 @@ async def approve_request(request_id: str, x_admin_token: str = None):
             "bot_color": "#1a569a",
             "custom_prompt": r["special_instructions"] or ""
         }).execute()
-
-        # Update request status
-        supabase.table("trial_requests").update({
-            "status": "approved"
-        }).eq("id", request_id).execute()
-
-        # Notify GHL
+        supabase.table("trial_requests").update({"status": "approved"}).eq("id", request_id).execute()
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
@@ -1150,12 +1055,11 @@ async def approve_request(request_id: str, x_admin_token: str = None):
                 )
         except Exception as e:
             print(f"GHL notification error: {str(e)}")
-
         return {
             "success": True,
             "client_id": client_id,
             "password": password,
-            "message": f"Account created successfully"
+            "message": "Account created successfully"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1168,17 +1072,16 @@ def reject_request(request_id: str, x_admin_token: str = None):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-        supabase.table("trial_requests").update({
-            "status": "rejected"
-        }).eq("id", request_id).execute()
+        supabase.table("trial_requests").update({"status": "rejected"}).eq("id", request_id).execute()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/requests/upload-doc")
 async def upload_doc(request: Request):
     try:
         from database import get_supabase_client
-        import base64
+        import base64, uuid
         supabase = get_supabase_client()
         data = await request.json()
         file_data = data.get("file_data", "")
@@ -1187,21 +1090,15 @@ async def upload_doc(request: Request):
         request_email = data.get("email", "unknown")
         if not file_data:
             raise HTTPException(status_code=400, detail="No file data provided")
-        # Decode base64
         file_bytes = base64.b64decode(file_data.split(",")[-1])
-        # Check file size — max 5MB
         if len(file_bytes) > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB.")
-        # Create unique file path
-        import uuid
         file_path = f"{request_email}/{uuid.uuid4()}_{file_name}"
-        # Upload to Supabase storage
         supabase.storage.from_("business-docs").upload(
             file_path,
             file_bytes,
             {"content-type": content_type, "upsert": "true"}
         )
-        # Get public URL
         public_url = supabase.storage.from_("business-docs").get_public_url(file_path)
         return {"success": True, "url": public_url, "file_name": file_name}
     except HTTPException:
@@ -1217,61 +1114,35 @@ def set_request_type(request_id: str, request_type: str, x_admin_token: str = No
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-        supabase.table("trial_requests").update({
-            "request_type": request_type
-        }).eq("id", request_id).execute()
+        supabase.table("trial_requests").update({"request_type": request_type}).eq("id", request_id).execute()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
 # PASSWORD RESET ENDPOINTS
 # ============================================
-
-import secrets as secrets_module
-from datetime import datetime, timedelta, timezone
-
-class PasswordResetRequest(BaseModel):
-    email: str
-
-class PasswordResetConfirm(BaseModel):
-    token: str
-    new_password: str
 
 @app.post("/auth/forgot-password")
 async def forgot_password(data: PasswordResetRequest):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-
-        # Check if email exists
         auth = supabase.table("client_auth").select("*").eq("email", data.email).execute()
         if not auth.data:
-            # Return success anyway — don't reveal if email exists
             return {"success": True, "message": "If this email exists, a reset link has been sent."}
-
-        # Generate secure token
         token = secrets_module.token_urlsafe(32)
         expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-
-        # Delete any existing unused tokens for this email
         supabase.table("password_reset_tokens").delete().eq("email", data.email).eq("used", False).execute()
-
-        # Save new token
         supabase.table("password_reset_tokens").insert({
             "email": data.email,
             "token": token,
             "expires_at": expires_at,
             "used": False
         }).execute()
-
-        # Build reset link
         reset_link = f"https://emartit.github.io/emartit-dashboard/?reset_token={token}"
-
-        # Send to GHL webhook — GHL will email the client
         try:
-async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient() as client:
                 await client.post(
                     "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/db1e5b80-2edd-4780-99cc-e7e0defe1473",
                     json={
@@ -1284,47 +1155,34 @@ async with httpx.AsyncClient() as client:
                 )
         except Exception as e:
             print(f"GHL reset email error: {str(e)}")
-
         return {"success": True, "message": "If this email exists, a reset link has been sent."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/auth/reset-password")
 def reset_password(data: PasswordResetConfirm):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-
-        # Find token
         result = supabase.table("password_reset_tokens").select("*").eq("token", data.token).eq("used", False).execute()
         if not result.data:
             raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
-
         token_row = result.data[0]
-
-        # Check expiry
         expires_at = datetime.fromisoformat(token_row["expires_at"].replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expires_at:
             raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
-
-        # Update password
         new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
         supabase.table("client_auth").update({
             "password_hash": new_hash
         }).eq("email", token_row["email"]).execute()
-
-        # Mark token as used
         supabase.table("password_reset_tokens").update({
             "used": True
         }).eq("token", data.token).execute()
-
         return {"success": True, "message": "Password updated successfully. You can now log in."}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/auth/verify-reset-token/{token}")
 def verify_reset_token(token: str):
