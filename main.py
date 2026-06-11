@@ -987,18 +987,60 @@ async def approve_request(request_id: str, x_admin_token: str = None):
         # Generate password
         password = secrets.token_urlsafe(8)
 
-        # Check if email already exists
+ # Check if email already exists
         existing_client = supabase.table("clients").select("*").eq("email", r["email"]).execute()
         if existing_client.data:
             existing = existing_client.data[0]
             existing_type = existing.get("account_type", "paid")
 
-            # Already paid — block
+            # Already active paid — block completely
             if existing_type == "paid":
-                raise HTTPException(status_code=400, detail="This email already has an active paid account.")
+                raise HTTPException(status_code=400, detail="This email already has an active PAID account.")
 
-            # Existing trial or expired — convert to paid
-            if existing_type in ["trial", "expired"]:
+            # Trying to give second trial — block and force paid only
+            if existing_type in ["trial", "expired"] and r["request_type"] == "trial":
+                raise HTTPException(status_code=400, detail="⚠️ This client already used their free trial. You can only CONVERT TO PAID — click Approve as Paid instead.")
+
+            # Existing trial or expired + approving as paid — convert
+            if existing_type in ["trial", "expired"] and r["request_type"] == "paid":
+                supabase.table("clients").update({
+                    "account_type": "paid",
+                    "is_active": True,
+                    "trial_start": None,
+                    "trial_end": None,
+                    "trial_conversations_used": 0
+                }).eq("id", existing["id"]).execute()
+
+                supabase.table("trial_requests").update({
+                    "status": "approved"
+                }).eq("id", request_id).execute()
+
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                            json={
+                                "event": "request_approved",
+                                "account_type": "paid",
+                                "business_name": existing.get("business_name", ""),
+                                "email": existing.get("email", ""),
+                                "client_id": existing["id"],
+                                "login_email": existing.get("email", ""),
+                                "login_password": "Use your existing password",
+                                "dashboard_url": "https://emartit.github.io/emartit-dashboard",
+                                "payment_link": "https://www.emartit.com/subscribe"
+                            },
+                            timeout=10.0
+                        )
+                except Exception as e:
+                    print(f"GHL error: {str(e)}")
+
+                return {
+                    "success": True,
+                    "client_id": existing["id"],
+                    "password": "Use existing password",
+                    "message": "✅ Trial client successfully converted to PAID!"
+                }
                 supabase.table("clients").update({
                     "account_type": "paid",
                     "is_active": True,
