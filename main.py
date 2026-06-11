@@ -1271,9 +1271,9 @@ async def forgot_password(data: PasswordResetRequest):
 
         # Send to GHL webhook — GHL will email the client
         try:
-            async with httpx.AsyncClient() as client:
+async with httpx.AsyncClient() as client:
                 await client.post(
-                    "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                    "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/db1e5b80-2edd-4780-99cc-e7e0defe1473",
                     json={
                         "event": "password_reset_requested",
                         "email": data.email,
