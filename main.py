@@ -1223,3 +1223,120 @@ def set_request_type(request_id: str, request_type: str, x_admin_token: str = No
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# PASSWORD RESET ENDPOINTS
+# ============================================
+
+import secrets as secrets_module
+from datetime import datetime, timedelta, timezone
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
+
+@app.post("/auth/forgot-password")
+async def forgot_password(data: PasswordResetRequest):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+
+        # Check if email exists
+        auth = supabase.table("client_auth").select("*").eq("email", data.email).execute()
+        if not auth.data:
+            # Return success anyway — don't reveal if email exists
+            return {"success": True, "message": "If this email exists, a reset link has been sent."}
+
+        # Generate secure token
+        token = secrets_module.token_urlsafe(32)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+        # Delete any existing unused tokens for this email
+        supabase.table("password_reset_tokens").delete().eq("email", data.email).eq("used", False).execute()
+
+        # Save new token
+        supabase.table("password_reset_tokens").insert({
+            "email": data.email,
+            "token": token,
+            "expires_at": expires_at,
+            "used": False
+        }).execute()
+
+        # Build reset link
+        reset_link = f"https://emartit.github.io/emartit-dashboard/?reset_token={token}"
+
+        # Send to GHL webhook — GHL will email the client
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/b204372c-081f-4341-b1a8-710c6320375b",
+                    json={
+                        "event": "password_reset_requested",
+                        "email": data.email,
+                        "reset_link": reset_link,
+                        "expires_in": "1 hour"
+                    },
+                    timeout=10.0
+                )
+        except Exception as e:
+            print(f"GHL reset email error: {str(e)}")
+
+        return {"success": True, "message": "If this email exists, a reset link has been sent."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/reset-password")
+def reset_password(data: PasswordResetConfirm):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+
+        # Find token
+        result = supabase.table("password_reset_tokens").select("*").eq("token", data.token).eq("used", False).execute()
+        if not result.data:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
+
+        token_row = result.data[0]
+
+        # Check expiry
+        expires_at = datetime.fromisoformat(token_row["expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires_at:
+            raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
+
+        # Update password
+        new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
+        supabase.table("client_auth").update({
+            "password_hash": new_hash
+        }).eq("email", token_row["email"]).execute()
+
+        # Mark token as used
+        supabase.table("password_reset_tokens").update({
+            "used": True
+        }).eq("token", data.token).execute()
+
+        return {"success": True, "message": "Password updated successfully. You can now log in."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/verify-reset-token/{token}")
+def verify_reset_token(token: str):
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        result = supabase.table("password_reset_tokens").select("*").eq("token", token).eq("used", False).execute()
+        if not result.data:
+            return {"valid": False, "message": "Invalid or already used reset link."}
+        expires_at = datetime.fromisoformat(result.data[0]["expires_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) > expires_at:
+            return {"valid": False, "message": "Reset link has expired."}
+        return {"valid": True, "email": result.data[0]["email"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
