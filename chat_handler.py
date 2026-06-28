@@ -238,7 +238,7 @@ async def handle_chat(client_id: str, message: str, history: list) -> str:
     messages.append({"role": "user", "content": message})
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",,
         max_tokens=600,
         system=system_prompt,
         messages=messages
