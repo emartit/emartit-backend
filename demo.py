@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/demo", tags=["Live Demo"])
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 MODEL = "claude-haiku-4-5-20251001"
 
 MAX_USER_MESSAGES = 10          # messages a visitor can send in one demo
@@ -93,7 +92,12 @@ def demo_chat(req: DemoChatRequest, request: Request):
 
     _check_daily_limit(_visitor_ip(request))
 
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="The demo is not available right now. Please try again later.")
+
     try:
+        client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=MODEL,
             max_tokens=300,
