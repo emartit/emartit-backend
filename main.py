@@ -8,7 +8,7 @@ import os
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.0.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,6 +17,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ============================================
+# LIVE DEMO (website "Try it yourself" section)
+# ============================================
+from demo import router as demo_router
+app.include_router(demo_router)
 
 class Message(BaseModel):
     role: str
@@ -149,7 +155,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.0.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.1.0"}
 
 @app.get("/health")
 def health_check():
