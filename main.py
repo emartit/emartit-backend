@@ -8,7 +8,7 @@ import os
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.1.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -151,11 +151,15 @@ class TrialRequest(BaseModel):
     request_type: Optional[str] = "trial"
     ghl_contact_id: Optional[str] = ""
 
+class EmailStatus(BaseModel):
+    email: str
+    status: str
+
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.1.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.2.0"}
 
 @app.get("/health")
 def health_check():
@@ -933,6 +937,30 @@ async def incoming_request(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/requests/email-status")
+def set_email_status(data: EmailStatus, key: str = ""):
+    """Called by the GHL request-form workflow after its Verify Email step."""
+    secret = os.environ.get("GHL_WEBHOOK_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    email = (data.email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    status = (data.status or "").strip().lower()
+    if status not in ("valid", "invalid", "risky"):
+        status = "unknown"
+    try:
+        from database import get_supabase_client
+        supabase = get_supabase_client()
+        supabase.table("email_verifications").upsert({
+            "email": email,
+            "status": status,
+            "checked_at": datetime.now(timezone.utc).isoformat()
+        }).execute()
+        return {"success": True, "email": email, "status": status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/admin/requests")
 def get_all_requests(x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
@@ -959,6 +987,18 @@ async def approve_request(request_id: str, x_admin_token: str = None):
         if not req.data:
             raise HTTPException(status_code=404, detail="Request not found")
         r = req.data[0]
+        request_email = (r.get("email") or "").strip().lower()
+        try:
+            from demo import validate_email
+            email_check = validate_email(request_email)
+        except Exception as e:
+            print(f"Email check skipped: {e}")
+            email_check = {"ok": True}
+        if not email_check.get("ok"):
+            raise HTTPException(status_code=400, detail=f"⚠️ This request's email failed our email check ({email_check.get('message', 'invalid email')}). Please REJECT this request.")
+        verification = supabase.table("email_verifications").select("status").eq("email", request_email).execute()
+        if verification.data and verification.data[0].get("status") == "invalid":
+            raise HTTPException(status_code=400, detail="⚠️ GoHighLevel marked this email as INVALID. Please REJECT this request.")
         password = secrets.token_urlsafe(8)
         existing_client = supabase.table("clients").select("*").eq("email", r["email"]).execute()
         if existing_client.data:
@@ -1067,6 +1107,8 @@ async def approve_request(request_id: str, x_admin_token: str = None):
             "password": password,
             "message": "Account created successfully"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
