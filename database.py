@@ -34,7 +34,9 @@ def log_conversation(client_id: str, session_id: str, message: str, role: str):
     except Exception as e:
         print(f"Log error: {e}")
 
-def increment_usage(client_id: str, input_tokens: int = 0, output_tokens: int = 0):
+def increment_usage(client_id: str, input_tokens: int = 0, output_tokens: int = 0, new_conversation: bool = True):
+    """Adds tokens on every message, but counts a CONVERSATION only once —
+    on the first message of a chat (new_conversation=True)."""
     try:
         from datetime import datetime
         now = datetime.now()
@@ -46,6 +48,7 @@ def increment_usage(client_id: str, input_tokens: int = 0, output_tokens: int = 
         output_cost = (output_tokens / 1000) * 0.015
         total_cost = input_cost + output_cost
         total_tokens = input_tokens + output_tokens
+        add_conversation = 1 if new_conversation else 0
 
         existing = supabase.table("usage").select("*")\
             .eq("client_id", client_id)\
@@ -55,10 +58,10 @@ def increment_usage(client_id: str, input_tokens: int = 0, output_tokens: int = 
 
         if existing.data:
             usage_id = existing.data[0]["id"]
-            current_count = existing.data[0]["conversation_count"]
-            current_tokens = existing.data[0].get("token_count", 0)
+            current_count = existing.data[0].get("conversation_count") or 0
+            current_tokens = existing.data[0].get("token_count") or 0
             supabase.table("usage").update({
-                "conversation_count": current_count + 1,
+                "conversation_count": current_count + add_conversation,
                 "token_count": current_tokens + total_tokens
             }).eq("id", usage_id).execute()
         else:
@@ -66,7 +69,7 @@ def increment_usage(client_id: str, input_tokens: int = 0, output_tokens: int = 
                 "client_id": client_id,
                 "month": now.month,
                 "year": now.year,
-                "conversation_count": 1,
+                "conversation_count": add_conversation,
                 "token_count": total_tokens
             }).execute()
 
