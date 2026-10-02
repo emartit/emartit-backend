@@ -5,10 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
+import uuid
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.2.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,6 +25,12 @@ app.add_middleware(
 from demo import router as demo_router
 app.include_router(demo_router)
 
+# ============================================
+# KNOWLEDGE (document reading + AI training)
+# ============================================
+from knowledge import router as knowledge_router
+app.include_router(knowledge_router)
+
 class Message(BaseModel):
     role: str
     content: str
@@ -32,10 +39,12 @@ class ChatRequest(BaseModel):
     client_id: str
     message: str
     conversation_history: Optional[List[Message]] = []
+    session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     reply: str
     success: bool
+    session_id: Optional[str] = None
 
 class ClientCreate(BaseModel):
     name: str
@@ -159,11 +168,19 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.2.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.3.0"}
 
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+def _is_new_conversation(history) -> bool:
+    """A chat is new when the visitor hasn't sent any earlier message in it."""
+    for msg in history or []:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+        if role == "user":
+            return False
+    return True
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
@@ -176,15 +193,20 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         client_data = client.data[0]
         account_type = client_data.get("account_type", "paid")
         is_active = client_data.get("is_active", True)
+
+        is_new = _is_new_conversation(request.conversation_history)
+        session_id = (request.session_id or "").strip()[:64] or str(uuid.uuid4())
+
         if not is_active:
             return ChatResponse(
                 reply="This chatbot is currently inactive. Please contact the business directly.",
-                success=False
+                success=False,
+                session_id=session_id
             )
         if account_type == "trial":
             trial_end = client_data.get("trial_end")
             trial_limit = client_data.get("trial_conversation_limit", 10)
-            trial_used = client_data.get("trial_conversations_used", 0)
+            trial_used = client_data.get("trial_conversations_used", 0) or 0
             if trial_end:
                 trial_end_dt = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
                 if datetime.now(timezone.utc) > trial_end_dt:
@@ -194,31 +216,38 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                     }).eq("id", request.client_id).execute()
                     background_tasks.add_task(notify_ghl_trial_expired, client_data, "expired_by_time")
                     return ChatResponse(
-                        reply="Our free trial has ended. Please contact us to continue using this service. 😊",
-                        success=False
+                        reply="Our free trial has ended. Please contact us to continue using this service.",
+                        success=False,
+                        session_id=session_id
                     )
-            if trial_used >= trial_limit:
+            # Trial limit counts CONVERSATIONS (chats), not single messages.
+            # A chat that has already started is allowed to finish.
+            if is_new:
+                if trial_used >= trial_limit:
+                    supabase.table("clients").update({
+                        "account_type": "expired",
+                        "is_active": False
+                    }).eq("id", request.client_id).execute()
+                    background_tasks.add_task(notify_ghl_trial_expired, client_data, "expired_by_usage")
+                    return ChatResponse(
+                        reply="Our free trial has ended. Please contact us to continue using this service.",
+                        success=False,
+                        session_id=session_id
+                    )
                 supabase.table("clients").update({
-                    "account_type": "expired",
-                    "is_active": False
+                    "trial_conversations_used": trial_used + 1
                 }).eq("id", request.client_id).execute()
-                background_tasks.add_task(notify_ghl_trial_expired, client_data, "expired_by_usage")
-                return ChatResponse(
-                    reply="Our free trial has ended. Please contact us to continue using this service. 😊",
-                    success=False
-                )
-            supabase.table("clients").update({
-                "trial_conversations_used": trial_used + 1
-            }).eq("id", request.client_id).execute()
-            if trial_used + 1 == trial_limit - 1:
-                background_tasks.add_task(notify_ghl_trial_warning, client_data)
+                if trial_used + 1 == trial_limit - 1:
+                    background_tasks.add_task(notify_ghl_trial_warning, client_data)
         from chat_handler import handle_chat
         reply = await handle_chat(
             client_id=request.client_id,
             message=request.message,
-            history=request.conversation_history
+            history=request.conversation_history,
+            session_id=session_id,
+            new_conversation=is_new
         )
-        return ChatResponse(reply=reply, success=True)
+        return ChatResponse(reply=reply, success=True, session_id=session_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -514,6 +543,7 @@ def register_client(data: ClientRegister):
 def login_client(data: ClientLogin):
     try:
         from database import get_supabase_client
+        from knowledge import make_client_token
         supabase = get_supabase_client()
         password_hash = hashlib.sha256(data.password.encode()).hexdigest()
         result = supabase.table("client_auth").select("*").eq("email", data.email).eq("password_hash", password_hash).execute()
@@ -526,7 +556,8 @@ def login_client(data: ClientLogin):
         return {
             "success": True,
             "client_id": auth["client_id"],
-            "client": client.data[0]
+            "client": client.data[0],
+            "token": make_client_token(str(auth["client_id"]))
         }
     except HTTPException:
         raise
@@ -709,6 +740,7 @@ def admin_delete_client(client_id: str, x_admin_token: str = None):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
+        supabase.table("client_knowledge").delete().eq("client_id", client_id).execute()
         supabase.table("client_settings").delete().eq("client_id", client_id).execute()
         supabase.table("client_auth").delete().eq("client_id", client_id).execute()
         supabase.table("usage").delete().eq("client_id", client_id).execute()
@@ -900,35 +932,76 @@ async def upload_avatar(client_id: str, file: bytes = None, request: Request = N
 # TRIAL REQUESTS ENDPOINTS
 # ============================================
 
+def _clip(value, limit: int = 5000) -> str:
+    return str(value or "").strip()[:limit]
+
 @app.post("/requests/incoming")
-async def incoming_request(request: Request):
+async def incoming_request(request: Request, background_tasks: BackgroundTasks):
     try:
         from database import get_supabase_client
+        from knowledge import save_entry, rebuild_request_sheet, MAX_DOC_CHARS
         supabase = get_supabase_client()
         data = await request.json()
+
+        document_text = _clip(data.get("document_text"), MAX_DOC_CHARS)
+        document_name = _clip(data.get("document_name"), 200)
+        services = _clip(data.get("services"))
+        description = _clip(data.get("description"))
+        email = _clip(data.get("email"), 320)
+
         result = supabase.table("trial_requests").insert({
-            "name": data.get("name", ""),
-            "business_name": data.get("business_name", ""),
-            "business_type": data.get("business_type", ""),
-            "email": data.get("email", ""),
-            "phone": data.get("phone", ""),
-            "website": data.get("website", ""),
-            "location": data.get("location", ""),
-            "working_hours": data.get("working_hours", ""),
-            "services": data.get("services", ""),
-            "description": data.get("description", ""),
-            "price_range": data.get("price_range", ""),
-            "special_instructions": data.get("special_instructions", ""),
-            "request_type": data.get("request_type", "trial"),
-            "ghl_contact_id": data.get("contact_id", ""),
-            "document_url": data.get("document_url", ""),
+            "name": _clip(data.get("name"), 200),
+            "business_name": _clip(data.get("business_name"), 200),
+            "business_type": _clip(data.get("business_type"), 200),
+            "email": email,
+            "phone": _clip(data.get("phone"), 50),
+            "website": _clip(data.get("website"), 500),
+            "location": _clip(data.get("location"), 300),
+            "working_hours": _clip(data.get("working_hours"), 500),
+            "services": services,
+            "description": description,
+            "price_range": _clip(data.get("price_range"), 500),
+            "special_instructions": _clip(data.get("special_instructions"), 3000),
+            "request_type": data.get("request_type", "trial") if data.get("request_type") in ("trial", "paid") else "trial",
+            "ghl_contact_id": _clip(data.get("contact_id"), 200),
+            "document_url": "",
             "status": "pending"
         }).execute()
+        request_id = result.data[0]["id"] if result.data else None
+
+        # Save the business knowledge from the form (text only — no files stored)
+        has_knowledge = False
+        if request_id:
+            try:
+                if document_text:
+                    save_entry(document_text, "upload", title=document_name or "Uploaded document",
+                               file_name=document_name, request_id=request_id, email=email)
+                    has_knowledge = True
+                if services or description:
+                    typed = ""
+                    if description:
+                        typed += f"About the business:\n{description}\n\n"
+                    if services:
+                        typed += f"Services and prices:\n{services}\n"
+                    price_range = _clip(data.get("price_range"), 500)
+                    if price_range:
+                        typed += f"\nPrice range: {price_range}\n"
+                    save_entry(typed, "form", title="Typed on the request form",
+                               request_id=request_id, email=email)
+                    has_knowledge = True
+                if has_knowledge:
+                    background_tasks.add_task(rebuild_request_sheet, request_id)
+            except Exception as e:
+                print(f"Knowledge save error (non-fatal): {e}")
+
+        # Forward to GHL without the long document text
+        ghl_data = {k: v for k, v in data.items() if k != "document_text"}
+        ghl_data["has_document"] = "yes" if document_text else "no"
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
                     "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/a1e70441-b76b-4a2a-b91f-d1b1ac4db821",
-                    json=data,
+                    json=ghl_data,
                     timeout=10.0
                 )
         except Exception as e:
@@ -974,8 +1047,17 @@ def get_all_requests(x_admin_token: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _attach_knowledge(request_id: str, client_id: str, background_tasks: BackgroundTasks):
+    """Move the request's documents/notes to the client and update the bot's knowledge."""
+    try:
+        from knowledge import attach_request_knowledge, rebuild_client_sheet
+        if attach_request_knowledge(request_id, client_id):
+            background_tasks.add_task(rebuild_client_sheet, client_id)
+    except Exception as e:
+        print(f"Knowledge attach error (non-fatal): {e}")
+
 @app.post("/admin/requests/{request_id}/approve")
-async def approve_request(request_id: str, x_admin_token: str = None):
+async def approve_request(request_id: str, background_tasks: BackgroundTasks, x_admin_token: str = None):
     expected = "admin_" + ADMIN_PASSWORD
     if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -1017,6 +1099,7 @@ async def approve_request(request_id: str, x_admin_token: str = None):
                     "trial_conversations_used": 0
                 }).eq("id", existing["id"]).execute()
                 supabase.table("trial_requests").update({"status": "approved"}).eq("id", request_id).execute()
+                _attach_knowledge(request_id, existing["id"], background_tasks)
                 try:
                     async with httpx.AsyncClient() as client:
                         await client.post(
@@ -1082,6 +1165,7 @@ async def approve_request(request_id: str, x_admin_token: str = None):
             "custom_prompt": r["special_instructions"] or ""
         }).execute()
         supabase.table("trial_requests").update({"status": "approved"}).eq("id", request_id).execute()
+        _attach_knowledge(request_id, client_id, background_tasks)
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
@@ -1122,35 +1206,6 @@ def reject_request(request_id: str, x_admin_token: str = None):
         supabase = get_supabase_client()
         supabase.table("trial_requests").update({"status": "rejected"}).eq("id", request_id).execute()
         return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/requests/upload-doc")
-async def upload_doc(request: Request):
-    try:
-        from database import get_supabase_client
-        import base64, uuid
-        supabase = get_supabase_client()
-        data = await request.json()
-        file_data = data.get("file_data", "")
-        file_name = data.get("file_name", "document.pdf")
-        content_type = data.get("content_type", "application/pdf")
-        request_email = data.get("email", "unknown")
-        if not file_data:
-            raise HTTPException(status_code=400, detail="No file data provided")
-        file_bytes = base64.b64decode(file_data.split(",")[-1])
-        if len(file_bytes) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB.")
-        file_path = f"{request_email}/{uuid.uuid4()}_{file_name}"
-        supabase.storage.from_("business-docs").upload(
-            file_path,
-            file_bytes,
-            {"content-type": content_type, "upsert": "true"}
-        )
-        public_url = supabase.storage.from_("business-docs").get_public_url(file_path)
-        return {"success": True, "url": public_url, "file_name": file_name}
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
