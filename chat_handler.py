@@ -39,6 +39,14 @@ Give one short intro line, then the list (one service per line, a few words each
 - If a visitor is upset, acknowledge their feelings first, then help or point them to the team.
 - Be patient with simple questions and efficient with busy professionals.
 
+## HIDDEN FOLLOW-UP TAG
+If, in this reply, any of these is true, add ONE extra line at the very end of your reply with the matching tag:
+- You could not answer the visitor's question from the business information: [[FLAG:unanswered]]
+- The visitor asks to speak to a person, manager or owner, or asks to be called or emailed back: [[FLAG:human]]
+- The visitor wants to book, schedule, get a quote or start a service: [[FLAG:booking]]
+- The visitor complains, is upset, or has an urgent problem: [[FLAG:complaint]]
+Several can be combined, for example [[FLAG:booking,human]]. If none is true, add no tag. The tag is removed automatically before the visitor sees the reply, so never mention it or write anything after it.
+
 ## RULES — NEVER BREAK THESE
 - Never share personal data of other customers.
 - Never make promises the business has not stated.
@@ -180,7 +188,15 @@ async def handle_chat(client_id: str, message: str, history: list,
 
     reply = "".join(
         block.text for block in response.content if getattr(block, "type", "") == "text"
-    ).strip() or "Sorry, I couldn't answer that just now. Please try again."
+    ).strip()
+    # Remove the hidden follow-up tag; visitors never see it
+    flags = set()
+    try:
+        from inbox import extract_flags
+        reply, flags = extract_flags(reply)
+    except Exception as e:
+        print(f"Flag read error (non-fatal): {e}")
+    reply = reply or "Sorry, I couldn't answer that just now. Please try again."
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
 
@@ -188,6 +204,8 @@ async def handle_chat(client_id: str, message: str, history: list,
         from database import log_conversation, increment_usage
         if not is_preview:
             log_conversation(client_id, session_id, reply, "assistant")
+            from inbox import record_message
+            record_message(client_id, session_id, message, flags)
         # AI cost is always recorded (it's real cost); preview never counts as a conversation
         increment_usage(client_id, input_tokens, output_tokens, new_conversation=new_conversation)
     except Exception as e:
