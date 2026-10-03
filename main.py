@@ -9,7 +9,7 @@ import uuid
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.4.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.4.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -173,7 +173,7 @@ PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://www.emartit.com/subscribe
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.4.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.4.1"}
 
 @app.get("/health")
 def health_check():
@@ -189,6 +189,11 @@ def _is_new_conversation(history) -> bool:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    # A client ID is always a UUID. Anything else (e.g. "demo") is simply not found.
+    try:
+        uuid.UUID(str(request.client_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="This chatbot is not set up yet.")
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
@@ -264,8 +269,9 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     except HTTPException:
         raise
     except Exception as e:
+        # Full error goes to the Railway logs only; visitors never see technical details
         print(f"Error in /chat endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Sorry, something went wrong. Please try again.")
 
 # ============================================
 # ANALYTICS ENDPOINTS
