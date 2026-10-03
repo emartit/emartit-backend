@@ -9,7 +9,7 @@ import uuid
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.3.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.3.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -165,10 +165,12 @@ class EmailStatus(BaseModel):
     status: str
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ematity2024")
+# Link sent in "trial ending / ended / approved" emails. Set PAYMENT_LINK in Railway to change it.
+PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://www.emartit.com/subscribe")
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.3.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.3.1"}
 
 @app.get("/health")
 def health_check():
@@ -344,7 +346,7 @@ async def notify_ghl_trial_expired(client_data: dict, reason: str):
                     "business_name": client_data.get("business_name", ""),
                     "email": client_data.get("email", ""),
                     "client_id": client_data.get("id", ""),
-                    "payment_link": "https://ematity.com/subscribe",
+                    "payment_link": PAYMENT_LINK,
                     "dashboard_url": "https://emartit.github.io/emartit-dashboard"
                 },
                 timeout=10.0
@@ -362,7 +364,7 @@ async def notify_ghl_trial_warning(client_data: dict):
                     "business_name": client_data.get("business_name", ""),
                     "email": client_data.get("email", ""),
                     "client_id": client_data.get("id", ""),
-                    "payment_link": "https://ematity.com/subscribe",
+                    "payment_link": PAYMENT_LINK,
                     "message": "Only 1 free conversation remaining!"
                 },
                 timeout=10.0
@@ -401,31 +403,10 @@ def save_client_settings(settings: ClientSettings):
         from database import get_supabase_client
         supabase = get_supabase_client()
         existing = supabase.table("client_settings").select("*").eq("client_id", settings.client_id).execute()
-        data = {
-            "client_id": settings.client_id,
-            "business_description": settings.business_description,
-            "services": settings.services,
-            "working_hours": settings.working_hours,
-            "location": settings.location,
-            "phone": settings.phone,
-            "website": settings.website,
-            "bot_name": settings.bot_name,
-            "bot_color": settings.bot_color,
-            "bubble_color": settings.bubble_color,
-            "header_color": settings.header_color,
-            "chat_position": settings.chat_position,
-            "bot_avatar": settings.bot_avatar,
-            "welcome_message": settings.welcome_message,
-            "custom_prompt": settings.custom_prompt,
-            "bot_avatar_url": settings.bot_avatar_url,
-            "knowledge_base": settings.knowledge_base,
-            "faq_items": settings.faq_items,
-            "proactive_enabled": settings.proactive_enabled,
-            "proactive_message": settings.proactive_message,
-            "proactive_delay": settings.proactive_delay,
-            "notification_email": settings.notification_email,
-            "notification_enabled": settings.notification_enabled,
-        }
+        # Only the fields the page actually sent are saved. Fields it didn't send
+        # (knowledge base, FAQs, logo, colours…) are left exactly as they were.
+        data = settings.model_dump(exclude_unset=True)
+        data["client_id"] = settings.client_id
         if existing.data:
             result = supabase.table("client_settings").update(data).eq("client_id", settings.client_id).execute()
         else:
@@ -1113,7 +1094,7 @@ async def approve_request(request_id: str, background_tasks: BackgroundTasks, x_
                                 "login_email": existing.get("email", ""),
                                 "login_password": "Use your existing password",
                                 "dashboard_url": "https://emartit.github.io/emartit-dashboard",
-                                "payment_link": "https://www.emartit.com/subscribe"
+                                "payment_link": PAYMENT_LINK
                             },
                             timeout=10.0
                         )
@@ -1179,7 +1160,7 @@ async def approve_request(request_id: str, background_tasks: BackgroundTasks, x_
                         "login_email": r["email"],
                         "login_password": password,
                         "dashboard_url": "https://emartit.github.io/emartit-dashboard",
-                        "payment_link": "https://www.emartit.com/subscribe"
+                        "payment_link": PAYMENT_LINK
                     },
                     timeout=10.0
                 )
