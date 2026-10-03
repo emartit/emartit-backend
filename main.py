@@ -9,7 +9,7 @@ import uuid
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.3.1")
+app = FastAPI(title="eMart IT Chatbot API", version="2.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +40,7 @@ class ChatRequest(BaseModel):
     message: str
     conversation_history: Optional[List[Message]] = []
     session_id: Optional[str] = None
+    preview_token: Optional[str] = None   # sent only by the client dashboard's Chat Preview
 
 class ChatResponse(BaseModel):
     reply: str
@@ -131,6 +132,8 @@ class LeadCapture(BaseModel):
     visitor_email: Optional[str] = ""
     visitor_phone: Optional[str] = ""
     message: Optional[str] = ""
+    session_id: Optional[str] = None
+    source: Optional[str] = None
 
 class OfflineSettings(BaseModel):
     client_id: str
@@ -170,7 +173,7 @@ PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://www.emartit.com/subscribe
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.3.1"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.4.0"}
 
 @app.get("/health")
 def health_check():
@@ -199,6 +202,13 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         is_new = _is_new_conversation(request.conversation_history)
         session_id = (request.session_id or "").strip()[:64] or str(uuid.uuid4())
 
+        # Dashboard test chats (Chat Preview) are not counted in usage or the free trial.
+        # Only honoured with the client's own valid login token.
+        is_preview = False
+        if request.preview_token:
+            from knowledge import verify_client_token
+            is_preview = verify_client_token(request.preview_token) == str(request.client_id)
+
         if not is_active:
             return ChatResponse(
                 reply="This chatbot is currently inactive. Please contact the business directly.",
@@ -223,8 +233,8 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                         session_id=session_id
                     )
             # Trial limit counts CONVERSATIONS (chats), not single messages.
-            # A chat that has already started is allowed to finish.
-            if is_new:
+            # A chat that has already started is allowed to finish. Test chats are not counted.
+            if is_new and not is_preview:
                 if trial_used >= trial_limit:
                     supabase.table("clients").update({
                         "account_type": "expired",
@@ -247,7 +257,8 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             message=request.message,
             history=request.conversation_history,
             session_id=session_id,
-            new_conversation=is_new
+            new_conversation=is_new and not is_preview,
+            is_preview=is_preview
         )
         return ChatResponse(reply=reply, success=True, session_id=session_id)
     except HTTPException:
