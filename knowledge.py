@@ -423,9 +423,12 @@ def extract_document(body: FileBody, request: Request):
 @router.get("/admin/requests/{request_id}/knowledge")
 def admin_request_knowledge(request_id: str, x_admin_token: str = None):
     _require_admin(x_admin_token)
-    req = _sb().table("trial_requests").select("knowledge_sheet").eq("id", request_id).execute()
+    supabase = _sb()
+    req = supabase.table("trial_requests").select("knowledge_sheet").eq("id", request_id).execute()
     sheet = (req.data[0].get("knowledge_sheet") or "") if req.data else ""
-    return {"entries": _entries(request_id=request_id), "sheet": sheet}
+    # All rows that came with this request, including ones already moved to the client on approval
+    rows = supabase.table("client_knowledge").select("*").eq("request_id", request_id).order("created_at", desc=True).execute()
+    return {"entries": rows.data or [], "sheet": sheet}
 
 
 @router.get("/admin/clients/{client_id}/knowledge")
