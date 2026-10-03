@@ -9,7 +9,7 @@ import uuid
 import hashlib
 import secrets as secrets_module
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.4.1")
+app = FastAPI(title="eMart IT Chatbot API", version="2.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +30,18 @@ app.include_router(demo_router)
 # ============================================
 from knowledge import router as knowledge_router
 app.include_router(knowledge_router)
+
+# ============================================
+# INBOX (leads & queries from chats)
+# ============================================
+from inbox import router as inbox_router
+app.include_router(inbox_router)
+
+@app.on_event("startup")
+async def start_inbox_worker():
+    import asyncio
+    from inbox import worker_loop
+    asyncio.create_task(worker_loop())
 
 class Message(BaseModel):
     role: str
@@ -173,7 +185,7 @@ PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://www.emartit.com/subscribe
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.4.1"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.5.0"}
 
 @app.get("/health")
 def health_check():
@@ -739,6 +751,9 @@ def admin_delete_client(client_id: str, x_admin_token: str = None):
         from database import get_supabase_client
         supabase = get_supabase_client()
         supabase.table("client_knowledge").delete().eq("client_id", client_id).execute()
+        supabase.table("queries").delete().eq("client_id", client_id).execute()
+        supabase.table("leads").delete().eq("client_id", client_id).execute()
+        supabase.table("chat_sessions").delete().eq("client_id", client_id).execute()
         supabase.table("client_settings").delete().eq("client_id", client_id).execute()
         supabase.table("client_auth").delete().eq("client_id", client_id).execute()
         supabase.table("usage").delete().eq("client_id", client_id).execute()
@@ -837,24 +852,32 @@ async def capture_lead(data: LeadCapture):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-        result = supabase.table("leads").insert({
+        session_id = (data.session_id or "").strip()[:64] or None
+        source = data.source if data.source in ("form", "offline_form", "chat") else "form"
+        row = {
             "client_id": data.client_id,
-            "visitor_name": data.visitor_name,
-            "visitor_email": data.visitor_email,
-            "visitor_phone": data.visitor_phone,
-            "message": data.message
-        }).execute()
-        return {"success": True, "lead": result.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/leads/{client_id}")
-def get_leads(client_id: str):
-    try:
-        from database import get_supabase_client
-        supabase = get_supabase_client()
-        result = supabase.table("leads").select("*").eq("client_id", client_id).order("created_at", desc=True).execute()
-        return {"leads": result.data}
+            "visitor_name": (data.visitor_name or "")[:200],
+            "visitor_email": (data.visitor_email or "")[:320],
+            "visitor_phone": (data.visitor_phone or "")[:50],
+            "message": (data.message or "")[:2000],
+            "source": source,
+            "status": "new",
+        }
+        existing = None
+        if session_id:
+            row["session_id"] = session_id
+            existing = supabase.table("leads").select("id").eq("session_id", session_id).execute()
+        if existing and existing.data:
+            result = supabase.table("leads").update(row).eq("id", existing.data[0]["id"]).execute()
+        else:
+            result = supabase.table("leads").insert(row).execute()
+        if session_id:
+            try:
+                from inbox import mark_form_lead_session
+                mark_form_lead_session(data.client_id, session_id)
+            except Exception as e:
+                print(f"Lead session mark error (non-fatal): {e}")
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
