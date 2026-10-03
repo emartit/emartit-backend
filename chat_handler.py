@@ -143,10 +143,12 @@ def _clean_history(history: list) -> list:
 
 
 async def handle_chat(client_id: str, message: str, history: list,
-                      session_id: str = None, new_conversation: bool = True) -> str:
+                      session_id: str = None, new_conversation: bool = True,
+                      is_preview: bool = False) -> str:
     """Answer one visitor message.
     session_id groups all messages of one chat together.
-    new_conversation=True only for the first message of a chat (used for billing)."""
+    new_conversation=True only for the first message of a chat (used for billing).
+    is_preview=True for dashboard test chats: not saved as customer conversations."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise Exception("ANTHROPIC_API_KEY is not set")
@@ -160,7 +162,8 @@ async def handle_chat(client_id: str, message: str, history: list,
         settings = get_client_settings(client_id)
         if settings:
             system_prompt = build_system_prompt(settings)
-        log_conversation(client_id, session_id, message, "user")
+        if not is_preview:
+            log_conversation(client_id, session_id, message, "user")
     except Exception as e:
         print(f"Database error (non-fatal): {e}")
 
@@ -183,7 +186,9 @@ async def handle_chat(client_id: str, message: str, history: list,
 
     try:
         from database import log_conversation, increment_usage
-        log_conversation(client_id, session_id, reply, "assistant")
+        if not is_preview:
+            log_conversation(client_id, session_id, reply, "assistant")
+        # AI cost is always recorded (it's real cost); preview never counts as a conversation
         increment_usage(client_id, input_tokens, output_tokens, new_conversation=new_conversation)
     except Exception as e:
         print(f"Database logging error (non-fatal): {e}")
