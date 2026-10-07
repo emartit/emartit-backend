@@ -11,7 +11,7 @@ import secrets as secrets_module
 from security import (hash_password, verify_password, needs_upgrade, require_admin,
                       require_client_or_admin, is_admin, mask_contact_fields, mask_text, log_admin_access)
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.6.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,11 +69,11 @@ class ClientCreate(BaseModel):
 
 class ClientSettings(BaseModel):
     client_id: str
-    business_description: str
-    services: str
-    working_hours: str
-    location: str
-    phone: str
+    business_description: Optional[str] = None
+    services: Optional[str] = None
+    working_hours: Optional[str] = None
+    location: Optional[str] = None
+    phone: Optional[str] = None
     website: Optional[str] = ""
     bot_name: Optional[str] = "Assistant"
     bot_color: Optional[str] = "#1a569a"
@@ -91,6 +91,13 @@ class ClientSettings(BaseModel):
     proactive_delay: Optional[int] = 8
     notification_email: Optional[str] = ""
     notification_enabled: Optional[bool] = False
+    # chat widget extras
+    voice_input_enabled: Optional[bool] = None
+    voice_language: Optional[str] = None
+    read_aloud_enabled: Optional[bool] = None
+    idle_reminders_enabled: Optional[bool] = None
+    idle_message_1: Optional[str] = None
+    idle_message_2: Optional[str] = None
 
 class ClientLogin(BaseModel):
     email: str
@@ -189,7 +196,7 @@ PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://www.emartit.com/subscribe
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.6.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.7.0"}
 
 @app.get("/health")
 def health_check():
@@ -490,6 +497,8 @@ PUBLIC_SETTING_KEYS = (
     "bot_avatar", "bot_avatar_url", "lead_capture_enabled", "lead_capture_name", "lead_capture_email",
     "lead_capture_phone", "offline_mode_enabled", "offline_message", "business_hours", "timezone",
     "quick_replies", "proactive_enabled", "proactive_message", "proactive_delay",
+    "voice_input_enabled", "voice_language", "read_aloud_enabled",
+    "idle_reminders_enabled", "idle_message_1", "idle_message_2",
 )
 
 @app.get("/clients/{client_id}/settings")
