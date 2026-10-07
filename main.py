@@ -8,8 +8,10 @@ import os
 import uuid
 import hashlib
 import secrets as secrets_module
+from security import (hash_password, verify_password, needs_upgrade, require_admin,
+                      require_client_or_admin, is_admin, mask_contact_fields, mask_text, log_admin_access)
 
-app = FastAPI(title="eMart IT Chatbot API", version="2.5.0")
+app = FastAPI(title="eMart IT Chatbot API", version="2.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -130,6 +132,8 @@ class PasswordChange(BaseModel):
     client_id: str
     email: str
     new_password: str
+    current_password: Optional[str] = ""
+    token: Optional[str] = ""
 
 class PasswordResetRequest(BaseModel):
     email: str
@@ -185,11 +189,37 @@ PAYMENT_LINK = os.environ.get("PAYMENT_LINK", "https://www.emartit.com/subscribe
 
 @app.get("/")
 def root():
-    return {"status": "eMart IT Chatbot API is running", "version": "2.5.0"}
+    return {"status": "eMart IT Chatbot API is running", "version": "2.6.0"}
 
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+def _auth_rows_by_email(supabase, email: str) -> list:
+    """Login rows for this email, ignoring capital letters (Iqbal@Gmail.com == iqbal@gmail.com)."""
+    email = (email or "").strip()
+    if not email or len(email) > 320:
+        return []
+    # case-insensitive search; the exact check below removes anything that only looks similar
+    rows = supabase.table("client_auth").select("*").ilike("email", email).execute().data or []
+    return [r for r in rows if (r.get("email") or "").strip().lower() == email.lower()]
+
+_reset_requests = {}
+
+def _reset_rate_ok(email: str) -> bool:
+    """At most 3 reset emails per address per hour."""
+    import time as _time
+    now = _time.time()
+    key = (email or "").strip().lower()
+    recent = [t for t in _reset_requests.get(key, []) if now - t < 3600]
+    if len(recent) >= 3:
+        _reset_requests[key] = recent
+        return False
+    recent.append(now)
+    _reset_requests[key] = recent
+    if len(_reset_requests) > 5000:
+        _reset_requests.clear()
+    return True
 
 def _is_new_conversation(history) -> bool:
     """A chat is new when the visitor hasn't sent any earlier message in it."""
@@ -402,7 +432,8 @@ async def notify_ghl_trial_warning(client_data: dict):
         print(f"GHL warning notification error: {str(e)}")
 
 @app.post("/clients")
-def create_client(client: ClientCreate):
+def create_client(client: ClientCreate, x_admin_token: str = None):
+    require_admin(x_admin_token)
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
@@ -414,24 +445,23 @@ def create_client(client: ClientCreate):
         }).execute()
         return {"success": True, "client": result.data[0]}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Create client error: {e}")
+        raise HTTPException(status_code=500, detail="Could not create the client.")
 
 @app.get("/clients")
-def list_clients():
-    try:
-        from database import get_supabase_client
-        supabase = get_supabase_client()
-        result = supabase.table("clients").select("*").execute()
-        return {"clients": result.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def list_clients(x_admin_token: str = None):
+    require_admin(x_admin_token)
+    from database import get_supabase_client
+    result = get_supabase_client().table("clients").select("*").execute()
+    return {"clients": result.data}
 
 @app.post("/clients/settings")
-def save_client_settings(settings: ClientSettings):
+def save_client_settings(settings: ClientSettings, token: str = None, x_admin_token: str = None):
+    require_client_or_admin(settings.client_id, token, x_admin_token)
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-        existing = supabase.table("client_settings").select("*").eq("client_id", settings.client_id).execute()
+        existing = supabase.table("client_settings").select("client_id").eq("client_id", settings.client_id).execute()
         # Only the fields the page actually sent are saved. Fields it didn't send
         # (knowledge base, FAQs, logo, colours…) are left exactly as they were.
         data = settings.model_dump(exclude_unset=True)
@@ -440,9 +470,10 @@ def save_client_settings(settings: ClientSettings):
             result = supabase.table("client_settings").update(data).eq("client_id", settings.client_id).execute()
         else:
             result = supabase.table("client_settings").insert(data).execute()
-        return {"success": True, "settings": result.data[0]}
+        return {"success": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Save settings error: {e}")
+        raise HTTPException(status_code=500, detail="Could not save the settings.")
 
 @app.get("/clients/{client_id}/usage")
 def get_usage(client_id: str):
@@ -454,19 +485,32 @@ def get_usage(client_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+PUBLIC_SETTING_KEYS = (
+    "bot_name", "welcome_message", "bot_color", "bubble_color", "header_color", "chat_position",
+    "bot_avatar", "bot_avatar_url", "lead_capture_enabled", "lead_capture_name", "lead_capture_email",
+    "lead_capture_phone", "offline_mode_enabled", "offline_message", "business_hours", "timezone",
+    "quick_replies", "proactive_enabled", "proactive_message", "proactive_delay",
+)
+
 @app.get("/clients/{client_id}/settings")
-def get_client_settings(client_id: str):
+def get_client_settings(client_id: str, token: str = None, x_admin_token: str = None):
     try:
-        from database import get_supabase_client
-        supabase = get_supabase_client()
-        result = supabase.table("client_settings").select("*").eq("client_id", client_id).execute()
-        client = supabase.table("clients").select("*").eq("id", client_id).execute()
-        return {
-            "settings": result.data[0] if result.data else {},
-            "client": client.data[0] if client.data else {}
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        uuid.UUID(str(client_id))
+    except ValueError:
+        return {"settings": {}, "client": {}}
+    from database import get_supabase_client
+    supabase = get_supabase_client()
+    result = supabase.table("client_settings").select("*").eq("client_id", client_id).execute()
+    settings = result.data[0] if result.data else {}
+    full_access = False
+    if token or x_admin_token:
+        require_client_or_admin(client_id, token, x_admin_token)
+        full_access = True
+    if not full_access:
+        # Public (website widget): only what the chat window needs to look and behave right
+        return {"settings": {k: settings.get(k) for k in PUBLIC_SETTING_KEYS if k in settings}, "client": {}}
+    client = supabase.table("clients").select("*").eq("id", client_id).execute()
+    return {"settings": settings, "client": client.data[0] if client.data else {}}
 
 @app.get("/clients/{client_id}/trial-status")
 def get_trial_status(client_id: str):
@@ -505,7 +549,8 @@ def get_trial_status(client_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/report")
-def get_monthly_report():
+def get_monthly_report(x_admin_token: str = None):
+    require_admin(x_admin_token)
     try:
         from database import get_monthly_report
         report = get_monthly_report()
@@ -525,7 +570,8 @@ def get_monthly_report():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/clients/{client_id}/status")
-def toggle_client_status(client_id: str, is_active: bool):
+def toggle_client_status(client_id: str, is_active: bool, x_admin_token: str = None):
+    require_admin(x_admin_token)
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
@@ -535,19 +581,20 @@ def toggle_client_status(client_id: str, is_active: bool):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/auth/register")
-def register_client(data: ClientRegister):
+def register_client(data: ClientRegister, x_admin_token: str = None):
+    require_admin(x_admin_token)
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-        password_hash = hashlib.sha256(data.password.encode()).hexdigest()
-        result = supabase.table("client_auth").insert({
+        supabase.table("client_auth").insert({
             "client_id": data.client_id,
             "email": data.email,
-            "password_hash": password_hash
+            "password_hash": hash_password(data.password)
         }).execute()
         return {"success": True, "message": "Account created successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Register error: {e}")
+        raise HTTPException(status_code=500, detail="Could not create the login.")
 
 @app.post("/auth/login")
 def login_client(data: ClientLogin):
@@ -555,11 +602,16 @@ def login_client(data: ClientLogin):
         from database import get_supabase_client
         from knowledge import make_client_token
         supabase = get_supabase_client()
-        password_hash = hashlib.sha256(data.password.encode()).hexdigest()
-        result = supabase.table("client_auth").select("*").eq("email", data.email).eq("password_hash", password_hash).execute()
-        if not result.data:
+        rows = _auth_rows_by_email(supabase, data.email)
+        auth = next((r for r in rows if verify_password(data.password, r.get("password_hash"))), None)
+        if not auth:
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        auth = result.data[0]
+        # old-style password: upgrade it to the safe format now that we know it
+        if needs_upgrade(auth.get("password_hash")):
+            try:
+                supabase.table("client_auth").update({"password_hash": hash_password(data.password)}).eq("client_id", auth["client_id"]).eq("email", auth["email"]).execute()
+            except Exception as e:
+                print(f"Password upgrade skipped: {e}")
         client = supabase.table("clients").select("*").eq("id", auth["client_id"]).execute()
         if not client.data or not client.data[0]["is_active"]:
             raise HTTPException(status_code=403, detail="Account is inactive")
@@ -572,7 +624,8 @@ def login_client(data: ClientLogin):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Login failed. Please try again.")
 
 # ============================================
 # PHASE 6 — ADMIN PANEL ENDPOINTS
@@ -692,7 +745,13 @@ def admin_view_conversations(client_id: str, x_admin_token: str = None):
         from database import get_supabase_client
         supabase = get_supabase_client()
         convos = supabase.table("conversations").select("*").eq("client_id", client_id).order("created_at", desc=True).limit(50).execute()
-        return {"conversations": convos.data}
+        rows = []
+        for c in convos.data or []:
+            c = dict(c)
+            if c.get("role") == "user":
+                c["message"] = mask_text(c.get("message") or "")
+            rows.append(c)
+        return {"conversations": rows}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -729,7 +788,8 @@ def admin_export_csv(x_admin_token: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin/notify-ghl")
-async def notify_ghl(payload: GHLPayload):
+async def notify_ghl(payload: GHLPayload, x_admin_token: str = None):
+    require_admin(x_admin_token)
     data = payload.dict()
     try:
         async with httpx.AsyncClient() as client:
@@ -832,16 +892,19 @@ def set_trial(client_id: str, data: TrialSetup, x_admin_token: str = None):
 
 @app.post("/auth/change-password")
 def change_password(data: PasswordChange):
-    try:
-        from database import get_supabase_client
-        supabase = get_supabase_client()
-        new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
-        supabase.table("client_auth").update({
-            "password_hash": new_hash
-        }).eq("client_id", data.client_id).eq("email", data.email).execute()
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Must be logged in as this client AND know the current password
+    require_client_or_admin(data.client_id, data.token, None)
+    if len(data.new_password or "") < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
+    from database import get_supabase_client
+    supabase = get_supabase_client()
+    rows = supabase.table("client_auth").select("*").eq("client_id", data.client_id).eq("email", data.email).execute().data or []
+    if not rows or not verify_password(data.current_password or "", rows[0].get("password_hash")):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    supabase.table("client_auth").update({
+        "password_hash": hash_password(data.new_password)
+    }).eq("client_id", data.client_id).eq("email", data.email).execute()
+    return {"success": True}
 
 # ============================================
 # LEADS & OFFLINE MODE
@@ -890,12 +953,13 @@ def admin_get_leads(client_id: str, x_admin_token: str = None):
         from database import get_supabase_client
         supabase = get_supabase_client()
         result = supabase.table("leads").select("*").eq("client_id", client_id).order("created_at", desc=True).execute()
-        return {"leads": result.data}
+        return {"leads": [mask_contact_fields(r) for r in (result.data or [])]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/clients/offline-settings")
-def save_offline_settings(data: OfflineSettings):
+def save_offline_settings(data: OfflineSettings, token: str = None, x_admin_token: str = None):
+    require_client_or_admin(data.client_id, token, x_admin_token)
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
@@ -922,15 +986,16 @@ def save_offline_settings(data: OfflineSettings):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/clients/upload-avatar")
-async def upload_avatar(client_id: str, file: bytes = None, request: Request = None):
+async def upload_avatar(client_id: str, request: Request, token: str = None, x_admin_token: str = None):
+    require_client_or_admin(client_id, token, x_admin_token)
     try:
         from database import get_supabase_client
         import base64
         supabase = get_supabase_client()
-        body = await request.body()
         data = await request.json()
         image_data = data.get("image_data", "")
-        file_name = data.get("file_name", "avatar.png")
+        import re as _re
+        file_name = _re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(str(data.get("file_name", "avatar.png"))))[-80:] or "avatar.png"
         content_type = data.get("content_type", "image/png")
         if not image_data:
             raise HTTPException(status_code=400, detail="No image data provided")
@@ -1167,7 +1232,7 @@ async def approve_request(request_id: str, background_tasks: BackgroundTasks, x_
                 "account_type": "paid",
                 "is_active": True
             }).eq("id", client_id).execute()
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        password_hash = hash_password(password)
         supabase.table("client_auth").insert({
             "client_id": client_id,
             "email": r["email"],
@@ -1252,14 +1317,17 @@ async def forgot_password(data: PasswordResetRequest):
     try:
         from database import get_supabase_client
         supabase = get_supabase_client()
-        auth = supabase.table("client_auth").select("*").eq("email", data.email).execute()
-        if not auth.data:
-            return {"success": True, "message": "If this email exists, a reset link has been sent."}
+        generic = {"success": True, "message": "If this email is registered, we've sent a reset link to it."}
+        rows = _auth_rows_by_email(supabase, data.email)
+        # Unknown email: send nothing, but answer the same way (never reveal which emails are registered)
+        if not rows or not _reset_rate_ok(data.email):
+            return generic
+        registered_email = rows[0]["email"]   # the link only ever goes to the registered address
         token = secrets_module.token_urlsafe(32)
         expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        supabase.table("password_reset_tokens").delete().eq("email", data.email).eq("used", False).execute()
+        supabase.table("password_reset_tokens").delete().eq("email", registered_email).eq("used", False).execute()
         supabase.table("password_reset_tokens").insert({
-            "email": data.email,
+            "email": registered_email,
             "token": token,
             "expires_at": expires_at,
             "used": False
@@ -1271,7 +1339,7 @@ async def forgot_password(data: PasswordResetRequest):
                     "https://services.leadconnectorhq.com/hooks/gc3cLEwwg5coVvb6yiOD/webhook-trigger/db1e5b80-2edd-4780-99cc-e7e0defe1473",
                     json={
                         "event": "password_reset_requested",
-                        "email": data.email,
+                        "email": registered_email,
                         "reset_link": reset_link,
                         "expires_in": "1 hour"
                     },
@@ -1279,7 +1347,7 @@ async def forgot_password(data: PasswordResetRequest):
                 )
         except Exception as e:
             print(f"GHL reset email error: {str(e)}")
-        return {"success": True, "message": "If this email exists, a reset link has been sent."}
+        return generic
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1295,7 +1363,7 @@ def reset_password(data: PasswordResetConfirm):
         expires_at = datetime.fromisoformat(token_row["expires_at"].replace("Z", "+00:00"))
         if datetime.now(timezone.utc) > expires_at:
             raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
-        new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
+        new_hash = hash_password(data.new_password)
         supabase.table("client_auth").update({
             "password_hash": new_hash
         }).eq("email", token_row["email"]).execute()
