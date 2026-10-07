@@ -354,15 +354,21 @@ def _list(table: str, client_id: str, status: str = None):
     return q.order("created_at", desc=True).limit(500).execute().data or []
 
 
-def _chat(client_id: str, session_id: str) -> dict:
+def _chat(client_id: str, session_id: str, masked: bool = False) -> dict:
     supabase = _sb()
     sess = supabase.table("chat_sessions").select("client_id,started_at,last_message_at").eq("session_id", session_id).execute()
     rows = supabase.table("conversations").select("role,message,created_at,client_id").eq("session_id", session_id).order("created_at").execute().data or []
     owner = (sess.data[0]["client_id"] if sess.data else (rows[0]["client_id"] if rows else None))
     if owner is None or str(owner) != str(client_id):
         raise HTTPException(status_code=404, detail="This chat could not be found.")
+    if masked:
+        from security import mask_text
+        for r in rows:
+            if r.get("role") == "user":
+                r["message"] = mask_text(r.get("message") or "")
     return {
         "session_id": session_id,
+        "masked": masked,
         "messages": [{"role": r.get("role"), "message": r.get("message"), "created_at": r.get("created_at")} for r in rows],
     }
 
@@ -434,17 +440,49 @@ def client_inbox_counts(token: str = None):
     return {"new_leads": leads.count or 0, "new_queries": queries.count or 0}
 
 
+# ---- Admin: contact details are masked; revealing them is recorded ----
+
 @router.get("/admin/clients/{client_id}/inbox")
 def admin_inbox(client_id: str, x_admin_token: str = None):
     _admin(x_admin_token)
     _refresh(client_id)
-    return {"leads": _list("leads", client_id), "queries": _list("queries", client_id)}
+    from security import mask_contact_fields
+    return {
+        "leads": [mask_contact_fields(r) for r in _list("leads", client_id)],
+        "queries": [mask_contact_fields(r) for r in _list("queries", client_id)],
+    }
 
 
 @router.get("/admin/clients/{client_id}/chats/{session_id}")
-def admin_chat(client_id: str, session_id: str, x_admin_token: str = None):
+def admin_chat(client_id: str, session_id: str, x_admin_token: str = None, reveal: bool = False, reason: str = ""):
     _admin(x_admin_token)
-    return _chat(client_id, session_id)
+    if reveal:
+        from security import log_admin_access
+        log_admin_access("reveal_chat", client_id, "chat", session_id, reason)
+    return _chat(client_id, session_id, masked=not reveal)
+
+
+@router.post("/admin/{item_type}/{item_id}/reveal")
+def admin_reveal(item_type: str, item_id: str, x_admin_token: str = None, reason: str = ""):
+    """Show one lead's or query's full contact details. Every reveal is recorded."""
+    _admin(x_admin_token)
+    table = {"leads": "leads", "queries": "queries"}.get(item_type)
+    if not table:
+        raise HTTPException(status_code=404, detail="Not found.")
+    found = _sb().table(table).select("*").eq("id", item_id).execute()
+    if not found.data:
+        raise HTTPException(status_code=404, detail="Not found.")
+    row = found.data[0]
+    from security import log_admin_access
+    log_admin_access("reveal_contact", row.get("client_id"), table, item_id, reason)
+    return {"item": row}
+
+
+@router.get("/admin/access-log")
+def admin_access_log(x_admin_token: str = None):
+    _admin(x_admin_token)
+    rows = _sb().table("admin_access_log").select("*").order("created_at", desc=True).limit(200).execute()
+    return {"log": rows.data or []}
 
 
 @router.post("/admin/inbox/process-now")
